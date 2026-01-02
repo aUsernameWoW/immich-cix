@@ -414,6 +414,7 @@ export enum TranscodeHardwareAcceleration {
   Qsv = 'qsv',
   Vaapi = 'vaapi',
   Rkmpp = 'rkmpp',
+  V4l2m2m = 'v4l2m2m',
   Disabled = 'disabled',
 }
 

@@ -69,6 +69,12 @@ export class BaseConfig implements VideoCodecSWConfig {
           : new RkmppSwDecodeConfig(config, interfaces);
         break;
       }
+      case TranscodeHardwareAcceleration.V4l2m2m: {
+        handler = config.accelDecode
+          ? new V4l2m2mHwDecodeConfig(config, interfaces)
+          : new V4l2m2mSwDecodeConfig(config, interfaces);
+        break;
+      }
       default: {
         throw new Error(`${config.accel.toUpperCase()} acceleration is unsupported`);
       }
@@ -979,5 +985,122 @@ export class RkmppHwDecodeConfig extends RkmppSwDecodeConfig {
       return [`scale_rkrga=${this.getScaling(videoStream)}:format=nv12:afbc=1:async_depth=4`];
     }
     return [];
+  }
+}
+
+export class V4l2m2mSwDecodeConfig extends BaseHWConfig {
+  eligibleForTwoPass(): boolean {
+    return false;
+  }
+
+  getBaseInputOptions(_videoStream: VideoStreamInfo, _format?: VideoFormat): string[] {
+    // V4L2M2M doesn't require -init_hw_device or -hwaccel_device flags
+    // Auto-detection happens when decoder/encoder is specified with -c:v
+    return [];
+  }
+
+  getPresetOptions() {
+    // V4L2M2M encoders do NOT support the -level parameter
+    // Attempting to pass -level causes FFmpeg to fail with "Error setting option level"
+    return [];
+  }
+
+  getBitrateOptions() {
+    const bitrate = this.getMaxBitrateValue();
+    if (bitrate > 0) {
+      return [`-b:v ${bitrate}${this.getBitrateUnit()}`];
+    }
+    // V4L2M2M doesn't support CRF directly, use QP instead
+    return [`-qp ${this.config.crf}`];
+  }
+
+  getSupportedCodecs() {
+    return [VideoCodec.H264, VideoCodec.Hevc];
+  }
+
+  getVideoCodec(): string {
+    return `${this.config.targetVideoCodec}_v4l2m2m`;
+  }
+
+  getFilterOptions(videoStream: VideoStreamInfo) {
+    const options = [];
+
+    if (this.shouldScale(videoStream)) {
+      options.push(`scale=${this.getScaling(videoStream)}`);
+    }
+
+    // V4L2M2M video encoders require yuv420p format
+    if (!videoStream.pixelFormat.endsWith('420p')) {
+      options.push('format=yuv420p');
+    } else if (options.length === 0 && this.shouldToneMap(videoStream)) {
+      // Handle tonemapping if needed
+      const tonemapOptions = this.getToneMapping(videoStream);
+      options.push(...tonemapOptions);
+    }
+
+    // Always ensure yuv420p for V4L2M2M encoder
+    if (options.length > 0 && !options.some((o) => o.includes('format=yuv420p'))) {
+      options.push('format=yuv420p');
+    }
+
+    return options;
+  }
+}
+
+export class V4l2m2mHwDecodeConfig extends V4l2m2mSwDecodeConfig {
+  // V4L2M2M supported input codecs for hardware decoding
+  private static readonly V4L2M2M_HW_DECODERS: Record<string, string> = {
+    h264: 'h264_v4l2m2m',
+    hevc: 'hevc_v4l2m2m',
+    vp8: 'vp8_v4l2m2m',
+    vp9: 'vp9_v4l2m2m',
+    av1: 'av1_v4l2m2m',
+    mpeg2video: 'mpeg2_v4l2m2m',
+    mpeg4: 'mpeg4_v4l2m2m',
+  };
+
+  getBaseInputOptions(videoStream: VideoStreamInfo, _format?: VideoFormat): string[] {
+    const codecName = videoStream.codecName?.toLowerCase();
+    const hwDecoder = codecName ? V4l2m2mHwDecodeConfig.V4L2M2M_HW_DECODERS[codecName] : undefined;
+
+    if (hwDecoder) {
+      // Use V4L2M2M hardware decoder for supported codecs
+      return ['-c:v', hwDecoder, '-noautorotate'];
+    }
+
+    // Fallback to software decoding for unsupported codecs
+    return ['-noautorotate'];
+  }
+
+  getFilterOptions(videoStream: VideoStreamInfo) {
+    const options = [];
+
+    if (this.shouldScale(videoStream)) {
+      options.push(`scale=${this.getScaling(videoStream)}`);
+    }
+
+    // Handle tonemapping with OpenCL if Mali GPU is available
+    if (this.shouldToneMap(videoStream)) {
+      const { primaries, transfer, matrix } = this.getColors();
+      if (this.interfaces.mali) {
+        // V4L2M2M + OpenCL tonemapping pipeline
+        options.push('hwupload');
+        options.push(
+          `tonemap_opencl=format=nv12:r=pc:p=${primaries}:t=${transfer}:m=${matrix}:tonemap=${this.config.tonemap}:desat=0:tonemap_mode=lum:peak=100`,
+        );
+        options.push('hwdownload');
+        options.push('format=yuv420p');
+      } else {
+        // Software tonemapping fallback
+        options.push(
+          `tonemapx=tonemap=${this.config.tonemap}:desat=0:p=${primaries}:t=${transfer}:m=${matrix}:r=pc:peak=100:format=yuv420p`,
+        );
+      }
+    } else {
+      // V4L2M2M video encoders require yuv420p format
+      options.push('format=yuv420p');
+    }
+
+    return options;
   }
 }
