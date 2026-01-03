@@ -63,6 +63,15 @@ INPUT_OUTPUT_MAPPING: dict[str, dict[str, Any]] = {
         "input": {"input.1": (1, 3, 112, 112)},
         "output": {"output": (1, 512)},
     },
+    # OCR models (PP-OCRv4)
+    "ocr_detection": {
+        "input": {"x": (1, 3, 960, 608)},
+        "output": {"sigmoid_0.tmp_0": (1, 1, 960, 608)},
+    },
+    "ocr_recognition": {
+        "input": {"x": (1, 3, 32, 400)},
+        "output": {"linear_1.tmp_1": (1, 100, 6625)},
+    },
 }
 
 
@@ -91,6 +100,15 @@ class CixSession:
 
     def _detect_model_type(self, path: Path) -> str:
         """Detect model type from file path."""
+        # Check for OCR models first (path pattern: ocr/*/detection/cix or ocr/*/recognition/cix)
+        path_str = str(path).lower()
+        if "/ocr/" in path_str:
+            grandparent = path.parent.parent.name.lower()
+            if grandparent == "detection":
+                return "ocr_detection"
+            elif grandparent == "recognition":
+                return "ocr_recognition"
+
         # Check parent directory name first (cix/model.cix -> parent is "cix", grandparent is type)
         grandparent = path.parent.parent.name.lower()
         if grandparent == "visual":
