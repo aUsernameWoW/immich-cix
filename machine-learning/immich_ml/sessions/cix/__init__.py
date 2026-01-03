@@ -253,20 +253,28 @@ class CixSession:
         self.npu.noe_job_infer_sync(self.job_id, -1)
 
         # Get and dequantize outputs
-        from libnoe import D_INT8, tensor_type_t
+        from libnoe import D_INT8, D_UINT8, tensor_type_t
 
         outputs: list[NDArray[np.float32]] = []
         for i, desc in enumerate(self.output_descs):
-            # noe_get_tensor requires: job_id, tensor_type, tensor_index, data_size (D_INT8 etc)
+            # Select correct data type based on tensor descriptor
+            if desc.data_type == noe_data_type_t.NOE_DATA_TYPE_U8:
+                d_type = D_UINT8
+                np_dtype = np.uint8
+            else:
+                d_type = D_INT8
+                np_dtype = np.int8
+
+            # noe_get_tensor requires: job_id, tensor_type, tensor_index, data_size
             result = self.npu.noe_get_tensor(
-                self.job_id, tensor_type_t.NOE_TENSOR_TYPE_OUTPUT, i, D_INT8
+                self.job_id, tensor_type_t.NOE_TENSOR_TYPE_OUTPUT, i, d_type
             )
             if result['ret'][0] != 0:
                 raise RuntimeError(f"Failed to get output tensor {i}")
             data = result['data']
 
-            # Convert list to numpy array (libnoe returns list of ints)
-            out_array = np.array(data, dtype=np.int8)
+            # Convert list to numpy array
+            out_array = np.array(data, dtype=np_dtype)
 
             # Dequantize: x = (q + zero_point) / scale
             out_float = (out_array.astype(np.float32) + desc.zero_point) / desc.scale
