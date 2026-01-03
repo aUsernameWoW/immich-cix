@@ -476,8 +476,10 @@ async def predict(
 
             # Face Recognition (standalone - for face crops)
             elif task == "facial-recognition" and type_name == "recognition":
-                # This is typically called with pre-cropped face images
-                response["facial-recognition"] = []
+                # Skip if detection already set the response (we do recognition in detection handler)
+                # This is only used for standalone face embedding requests with pre-cropped faces
+                if "facial-recognition" not in response:
+                    response["facial-recognition"] = []
 
     return ORJSONResponse(response)
 
