@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from huggingface_hub import snapshot_download
 
 import immich_ml.sessions.ann.loader
+import immich_ml.sessions.cix as cix
 import immich_ml.sessions.rknn as rknn
 from immich_ml.sessions.ort import OrtSession
 
@@ -67,9 +68,10 @@ class InferenceModel(ABC):
 
     def _download(self) -> None:
         ignored_patterns: dict[ModelFormat, list[str]] = {
-            ModelFormat.ONNX: ["*.armnn", "*.rknn"],
-            ModelFormat.ARMNN: ["*.rknn"],
-            ModelFormat.RKNN: ["*.armnn"],
+            ModelFormat.ONNX: ["*.armnn", "*.rknn", "*.cix"],
+            ModelFormat.ARMNN: ["*.rknn", "*.cix"],
+            ModelFormat.RKNN: ["*.armnn", "*.cix"],
+            ModelFormat.CIX: ["*.armnn", "*.rknn"],
         }
 
         snapshot_download(
@@ -111,6 +113,8 @@ class InferenceModel(ABC):
         match model_path.suffix:
             case ".armnn":
                 session: ModelSession = AnnSession(model_path)
+            case ".cix":
+                session = cix.CixSession(model_path)
             case ".onnx":
                 session = OrtSession(model_path)
             case ".rknn":
@@ -120,7 +124,12 @@ class InferenceModel(ABC):
         return session
 
     def model_path_for_format(self, model_format: ModelFormat) -> Path:
-        model_path_prefix = rknn.model_prefix if model_format == ModelFormat.RKNN else None
+        if model_format == ModelFormat.RKNN:
+            model_path_prefix = rknn.model_prefix
+        elif model_format == ModelFormat.CIX:
+            model_path_prefix = cix.model_prefix
+        else:
+            model_path_prefix = None
         if model_path_prefix:
             return self.model_dir / model_path_prefix / f"model.{model_format}"
         return self.model_dir / f"model.{model_format}"
@@ -168,7 +177,9 @@ class InferenceModel(ABC):
 
     @property
     def _model_format_default(self) -> ModelFormat:
-        if rknn.is_available:
+        if cix.is_available:
+            return ModelFormat.CIX
+        elif rknn.is_available:
             return ModelFormat.RKNN
         elif immich_ml.sessions.ann.loader.is_available and settings.ann:
             return ModelFormat.ARMNN

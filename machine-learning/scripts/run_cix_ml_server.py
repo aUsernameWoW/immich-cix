@@ -27,17 +27,25 @@ from immich_ml.sessions.cix import CixSession, is_available
 
 app = FastAPI(title="Immich ML (CIX NPU)")
 
+# Supported CIX NPU models
+CIX_SUPPORTED_OCR_MODELS = {"PP-OCRv4-cix", "PP-OCRv4_mobile"}
+
 # Global sessions
 clip_visual_session = None
 clip_text_session = None
 clip_tokenizer = None
 face_det_session = None
 face_rec_session = None
+ocr_det_session = None
+ocr_rec_session = None
+ocr_char_dict = None
 
 
 def load_models():
     """Load all CIX NPU models."""
-    global clip_visual_session, clip_text_session, clip_tokenizer, face_det_session, face_rec_session
+    global clip_visual_session, clip_text_session, clip_tokenizer
+    global face_det_session, face_rec_session
+    global ocr_det_session, ocr_rec_session, ocr_char_dict
 
     cache = Path.home() / ".cache/immich_ml"
 
@@ -83,6 +91,28 @@ def load_models():
     if path.exists():
         face_rec_session = CixSession(path)
         print(f"  Loaded Face Recognition: {path}")
+
+    # OCR Detection (PP-OCRv4)
+    path = cache / "ocr/PP-OCRv4_mobile/detection/cix/model.cix"
+    if path.exists():
+        ocr_det_session = CixSession(path)
+        print(f"  Loaded OCR Detection: {path}")
+
+    # OCR Recognition (PP-OCRv4)
+    path = cache / "ocr/PP-OCRv4_mobile/recognition/cix/model.cix"
+    if path.exists():
+        ocr_rec_session = CixSession(path)
+        print(f"  Loaded OCR Recognition: {path}")
+
+    # OCR Character Dictionary
+    dict_path = cache / "ocr/PP-OCRv4_mobile/ppocr_keys_v1.txt"
+    if dict_path.exists():
+        with open(dict_path, 'r', encoding='utf-8') as f:
+            # Add blank token at index 0 for CTC decoding
+            ocr_char_dict = [''] + [line.strip() for line in f.readlines()]
+            # Add space at end
+            ocr_char_dict.append(' ')
+        print(f"  Loaded OCR Dictionary: {len(ocr_char_dict)} characters")
 
     print("All models loaded!")
 
@@ -275,6 +305,310 @@ def serialize_embedding(arr: np.ndarray) -> str:
     return orjson.dumps(arr.flatten().tolist()).decode()
 
 
+# ============== OCR Functions ==============
+
+def preprocess_ocr_detection(image: Image.Image) -> tuple[np.ndarray, tuple[int, int], np.ndarray]:
+    """
+    Preprocess image for PP-OCRv4 text detection.
+
+    Args:
+        image: PIL Image (RGB)
+
+    Returns:
+        Tuple of (preprocessed tensor, original size, shape_list for postprocess)
+    """
+    # Target size for CIX model: 960x608
+    target_h, target_w = 960, 608
+
+    orig_w, orig_h = image.size
+
+    # Resize keeping aspect ratio, pad to target size
+    ratio = min(target_w / orig_w, target_h / orig_h)
+    new_w = int(orig_w * ratio)
+    new_h = int(orig_h * ratio)
+
+    # Ensure dimensions are multiples of 32
+    new_w = max(int(round(new_w / 32) * 32), 32)
+    new_h = max(int(round(new_h / 32) * 32), 32)
+
+    # Resize
+    resized = image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    img_np = np.array(resized, dtype=np.float32)
+
+    # Convert RGB to BGR
+    img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
+    # Normalize: (x - mean) / std, with mean=[0.485, 0.456, 0.406]*255, std=[0.229, 0.224, 0.225]*255
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32) * 255.0
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32) * 255.0
+    img_np = (img_np - mean) / std
+
+    # Pad to target size
+    padded = np.zeros((target_h, target_w, 3), dtype=np.float32)
+    padded[:new_h, :new_w, :] = img_np
+
+    # NCHW format
+    padded = padded.transpose(2, 0, 1)
+    padded = np.expand_dims(padded, 0)
+
+    # Shape list for postprocessing: [src_h, src_w, ratio_h, ratio_w]
+    shape_list = np.array([[orig_h, orig_w, new_h / orig_h, new_w / orig_w]], dtype=np.float32)
+
+    return padded.astype(np.float32), (orig_w, orig_h), shape_list
+
+
+def postprocess_ocr_detection(
+    pred: np.ndarray,
+    shape_list: np.ndarray,
+    thresh: float = 0.3,
+    box_thresh: float = 0.5,
+    unclip_ratio: float = 1.6,
+    max_candidates: int = 1000,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Postprocess PP-OCR text detection output (DBPostProcess).
+
+    Args:
+        pred: Model output [1, 1, H, W]
+        shape_list: Original shape info [1, 4]
+        thresh: Binarization threshold
+        box_thresh: Minimum box score threshold
+        unclip_ratio: Ratio to expand text boxes
+        max_candidates: Maximum number of text boxes
+
+    Returns:
+        Tuple of (boxes [N, 4, 2], scores [N])
+    """
+    import pyclipper
+    from shapely.geometry import Polygon
+
+    pred = pred[:, 0, :, :]  # [1, H, W]
+    segmentation = pred > thresh
+
+    src_h, src_w = int(shape_list[0, 0]), int(shape_list[0, 1])
+    bitmap = segmentation[0]
+    height, width = bitmap.shape
+
+    # Find contours
+    contours, _ = cv2.findContours(
+        (bitmap * 255).astype(np.uint8),
+        cv2.RETR_LIST,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    boxes, scores = [], []
+    for contour in contours[:max_candidates]:
+        # Get minimum area rectangle
+        points, sside = _get_mini_boxes(contour)
+        if sside < 3:
+            continue
+
+        points = np.array(points)
+
+        # Calculate box score
+        score = _box_score_fast(pred[0], points)
+        if score < box_thresh:
+            continue
+
+        # Unclip (expand) the box
+        try:
+            poly = Polygon(points)
+            distance = poly.area * unclip_ratio / poly.length
+            offset = pyclipper.PyclipperOffset()
+            offset.AddPath(points.astype(int).tolist(), pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
+            expanded = offset.Execute(distance)
+            if not expanded:
+                continue
+            box = np.array(expanded[0])
+        except Exception:
+            continue
+
+        # Get final mini box
+        box, sside = _get_mini_boxes(box.reshape((-1, 1, 2)))
+        if sside < 3 + 2:
+            continue
+
+        box = np.array(box)
+        # Scale back to original image coordinates
+        box[:, 0] = np.clip(np.round(box[:, 0] / width * src_w), 0, src_w)
+        box[:, 1] = np.clip(np.round(box[:, 1] / height * src_h), 0, src_h)
+
+        boxes.append(box.astype(np.float32))
+        scores.append(score)
+
+    if not boxes:
+        return np.array([]).reshape(0, 4, 2), np.array([])
+
+    return np.array(boxes), np.array(scores)
+
+
+def _get_mini_boxes(contour: np.ndarray) -> tuple[list, float]:
+    """Get minimum area bounding box from contour."""
+    bounding_box = cv2.minAreaRect(contour.astype(np.int32))
+    points = sorted(list(cv2.boxPoints(bounding_box)), key=lambda x: x[0])
+
+    if points[1][1] > points[0][1]:
+        index_1, index_4 = 0, 1
+    else:
+        index_1, index_4 = 1, 0
+
+    if points[3][1] > points[2][1]:
+        index_2, index_3 = 2, 3
+    else:
+        index_2, index_3 = 3, 2
+
+    box = [points[index_1], points[index_2], points[index_3], points[index_4]]
+    return box, min(bounding_box[1])
+
+
+def _box_score_fast(bitmap: np.ndarray, box: np.ndarray) -> float:
+    """Calculate score for a text box."""
+    h, w = bitmap.shape[:2]
+    box = box.copy()
+    xmin = np.clip(int(np.floor(box[:, 0].min())), 0, w - 1)
+    xmax = np.clip(int(np.ceil(box[:, 0].max())), 0, w - 1)
+    ymin = np.clip(int(np.floor(box[:, 1].min())), 0, h - 1)
+    ymax = np.clip(int(np.ceil(box[:, 1].max())), 0, h - 1)
+
+    mask = np.zeros((ymax - ymin + 1, xmax - xmin + 1), dtype=np.uint8)
+    box[:, 0] = box[:, 0] - xmin
+    box[:, 1] = box[:, 1] - ymin
+    cv2.fillPoly(mask, box.reshape(1, -1, 2).astype(np.int32), 1)
+    return cv2.mean(bitmap[ymin:ymax + 1, xmin:xmax + 1], mask)[0]
+
+
+def sorted_ocr_boxes(boxes: np.ndarray) -> tuple[np.ndarray, list[int]]:
+    """Sort text boxes from top to bottom, left to right."""
+    if len(boxes) == 0:
+        return boxes, []
+
+    # Sort by y, then by x within same line
+    sorted_boxes = sorted(enumerate(boxes), key=lambda x: (x[1][0][1], x[1][0][0]))
+    result = list(sorted_boxes)
+
+    # Fine-tune: swap adjacent boxes if they're on same line but wrong x order
+    for i in range(len(result) - 1):
+        for j in range(i, -1, -1):
+            if abs(result[j + 1][1][0][1] - result[j][1][0][1]) < 10 and \
+                    result[j + 1][1][0][0] < result[j][1][0][0]:
+                result[j], result[j + 1] = result[j + 1], result[j]
+            else:
+                break
+
+    indices = [r[0] for r in result]
+    return np.array([r[1] for r in result]), indices
+
+
+def get_rotate_crop_image(img: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """Crop and rotate text region from image."""
+    points = points.astype(np.float32)
+
+    img_crop_width = int(max(
+        np.linalg.norm(points[0] - points[1]),
+        np.linalg.norm(points[2] - points[3])
+    ))
+    img_crop_height = int(max(
+        np.linalg.norm(points[0] - points[3]),
+        np.linalg.norm(points[1] - points[2])
+    ))
+
+    pts_std = np.float32([
+        [0, 0],
+        [img_crop_width, 0],
+        [img_crop_width, img_crop_height],
+        [0, img_crop_height]
+    ])
+
+    M = cv2.getPerspectiveTransform(points, pts_std)
+    dst_img = cv2.warpPerspective(
+        img, M, (img_crop_width, img_crop_height),
+        borderMode=cv2.BORDER_REPLICATE,
+        flags=cv2.INTER_CUBIC
+    )
+
+    # Rotate if height > 1.5 * width
+    if dst_img.shape[0] * 1.0 / dst_img.shape[1] >= 1.5:
+        dst_img = np.rot90(dst_img)
+
+    return dst_img
+
+
+def preprocess_ocr_recognition(img: np.ndarray) -> np.ndarray:
+    """
+    Preprocess cropped text image for PP-OCRv4 recognition.
+
+    Args:
+        img: Cropped text image (BGR, uint8)
+
+    Returns:
+        Preprocessed tensor [1, 3, 32, 400]
+    """
+    # Target shape: [3, 32, 400]
+    imgC, imgH, imgW = 3, 32, 400
+
+    h, w = img.shape[:2]
+    ratio = w / float(h)
+
+    if np.ceil(imgH * ratio) > imgW:
+        resized_w = imgW
+    else:
+        resized_w = int(np.ceil(imgH * ratio))
+
+    resized_img = cv2.resize(img, (resized_w, imgH))
+    resized_img = resized_img.astype(np.float32)
+
+    # Normalize
+    resized_img = resized_img.transpose((2, 0, 1)) / 255.0
+    resized_img -= 0.5
+    resized_img /= 0.5
+
+    # Pad to target width
+    padding = np.zeros((imgC, imgH, imgW), dtype=np.float32)
+    padding[:, :, :resized_w] = resized_img
+
+    return np.expand_dims(padding, 0)
+
+
+def postprocess_ocr_recognition(pred: np.ndarray, char_dict: list[str]) -> tuple[str, float]:
+    """
+    CTC decode recognition output.
+
+    Args:
+        pred: Model output [1, T, num_classes] (after softmax)
+        char_dict: Character dictionary
+
+    Returns:
+        Tuple of (decoded text, confidence score)
+    """
+    # Get best path
+    pred_idx = pred.argmax(axis=2)[0]  # [T]
+    pred_prob = pred.max(axis=2)[0]    # [T]
+
+    # CTC decode: remove blanks and duplicates
+    char_list = []
+    conf_list = []
+    prev_idx = 0  # blank
+
+    for i, idx in enumerate(pred_idx):
+        if idx != 0 and idx != prev_idx:  # Not blank and not duplicate
+            if idx < len(char_dict):
+                char_list.append(char_dict[idx])
+                conf_list.append(pred_prob[i])
+        prev_idx = idx
+
+    text = ''.join(char_list)
+    confidence = float(np.mean(conf_list)) if conf_list else 0.0
+
+    return text, confidence
+
+
+def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    """Compute softmax along specified axis."""
+    x_max = np.max(x, axis=axis, keepdims=True)
+    x_exp = np.exp(x - x_max)
+    return x_exp / np.sum(x_exp, axis=axis, keepdims=True)
+
+
 # Reference landmarks for face alignment (ArcFace standard)
 ARCFACE_DST = np.array([
     [38.2946, 51.6963],
@@ -348,6 +682,8 @@ async def root():
             "clip_text": clip_text_session is not None,
             "face_detection": face_det_session is not None,
             "face_recognition": face_rec_session is not None,
+            "ocr_detection": ocr_det_session is not None,
+            "ocr_recognition": ocr_rec_session is not None,
         }
     })
 
@@ -480,6 +816,118 @@ async def predict(
                 # This is only used for standalone face embedding requests with pre-cropped faces
                 if "facial-recognition" not in response:
                     response["facial-recognition"] = []
+
+            # OCR Detection + Recognition
+            elif task == "ocr" and type_name == "detection":
+                if ocr_det_session and ocr_rec_session and pil_image and ocr_char_dict:
+                    # Validate model name - CIX NPU only supports PP-OCRv4
+                    if model_name and model_name not in CIX_SUPPORTED_OCR_MODELS:
+                        print(f"OCR: Requested model '{model_name}' not supported on CIX NPU, using PP-OCRv4-cix")
+
+                    start = time.perf_counter()
+
+                    # Get options
+                    min_det_score = options.get("minScore", 0.5)
+
+                    # 1. Text Detection
+                    det_input, orig_size, shape_list = preprocess_ocr_detection(pil_image)
+                    det_output = ocr_det_session.run(None, {"x": det_input})
+
+                    # Reshape output: should be [1, 1, 960, 608]
+                    det_pred = det_output[0].reshape(1, 1, 960, 608)
+
+                    # Postprocess detection
+                    boxes, box_scores = postprocess_ocr_detection(
+                        det_pred, shape_list, box_thresh=min_det_score
+                    )
+
+                    det_elapsed = (time.perf_counter() - start) * 1000
+
+                    if len(boxes) == 0:
+                        response["ocr"] = {
+                            "text": [],
+                            "box": [],
+                            "boxScore": [],
+                            "textScore": [],
+                        }
+                        print(f"OCR: {det_elapsed:.1f}ms, no text detected")
+                    else:
+                        # Sort boxes in reading order
+                        sorted_boxes_arr, _ = sorted_ocr_boxes(boxes)
+
+                        # 2. Text Recognition for each box
+                        img_np = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+                        texts = []
+                        text_scores = []
+                        valid_boxes = []
+                        valid_box_scores = []
+
+                        rec_start = time.perf_counter()
+                        for i, box in enumerate(sorted_boxes_arr):
+                            try:
+                                # Crop text region
+                                crop_img = get_rotate_crop_image(img_np, box)
+                                if crop_img.shape[0] < 2 or crop_img.shape[1] < 2:
+                                    continue
+
+                                # Preprocess for recognition
+                                rec_input = preprocess_ocr_recognition(crop_img)
+
+                                # Run recognition
+                                rec_output = ocr_rec_session.run(None, {"x": rec_input})
+
+                                # Reshape and apply softmax: [1, 100, 6625]
+                                rec_pred = rec_output[0].reshape(1, 100, 6625)
+                                rec_pred = softmax(rec_pred, axis=2)
+
+                                # Decode text
+                                text, conf = postprocess_ocr_recognition(rec_pred, ocr_char_dict)
+
+                                if text and conf > 0.1:  # Filter very low confidence
+                                    texts.append(text)
+                                    text_scores.append(conf)
+                                    # Normalize box coordinates to [0, 1]
+                                    norm_box = box.copy()
+                                    norm_box[:, 0] /= orig_size[0]  # width
+                                    norm_box[:, 1] /= orig_size[1]  # height
+                                    valid_boxes.append(norm_box)
+                                    valid_box_scores.append(box_scores[i] if i < len(box_scores) else 0.5)
+
+                            except Exception as e:
+                                print(f"OCR recognition error for box {i}: {e}")
+                                continue
+
+                        rec_elapsed = (time.perf_counter() - rec_start) * 1000
+                        total_elapsed = (time.perf_counter() - start) * 1000
+
+                        # Format response matching Immich API
+                        response["ocr"] = {
+                            "text": texts,
+                            "box": np.array(valid_boxes).reshape(-1).tolist() if valid_boxes else [],
+                            "boxScore": valid_box_scores,
+                            "textScore": text_scores,
+                        }
+
+                        print(f"OCR: {total_elapsed:.1f}ms (det: {det_elapsed:.1f}ms, rec: {rec_elapsed:.1f}ms), "
+                              f"found {len(texts)} text regions")
+                else:
+                    if "ocr" not in response:
+                        response["ocr"] = {
+                            "text": [],
+                            "box": [],
+                            "boxScore": [],
+                            "textScore": [],
+                        }
+
+            # OCR Recognition (standalone - handled in detection)
+            elif task == "ocr" and type_name == "recognition":
+                if "ocr" not in response:
+                    response["ocr"] = {
+                        "text": [],
+                        "box": [],
+                        "boxScore": [],
+                        "textScore": [],
+                    }
 
     return ORJSONResponse(response)
 
