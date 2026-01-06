@@ -31785,6 +31785,7 @@
           "qsv",
           "vaapi",
           "rkmpp",
+          "v4l2m2m",
           "disabled"
         ],
         "type": "string"
