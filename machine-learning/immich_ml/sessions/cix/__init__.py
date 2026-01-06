@@ -314,7 +314,10 @@ class CixSession:
                 log.warning(f"Error releasing CIX NPU resources: {e}")
 
     def __del__(self) -> None:
-        self.release()
+        try:
+            self.release()
+        except Exception:
+            pass  # Ignore cleanup errors during interpreter shutdown
 
 
 __all__ = ["CixSession", "CixNode", "is_available", "model_prefix", "INPUT_OUTPUT_MAPPING"]

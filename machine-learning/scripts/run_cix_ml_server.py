@@ -54,14 +54,20 @@ def load_models():
     # CLIP Visual
     path = cache / "clip/ViT-B-32__openai/visual/cix/model.cix"
     if path.exists():
-        clip_visual_session = CixSession(path)
-        print(f"  Loaded CLIP Visual: {path}")
+        try:
+            clip_visual_session = CixSession(path)
+            print(f"  Loaded CLIP Visual: {path}")
+        except Exception as e:
+            print(f"  Failed to load CLIP Visual: {e}")
 
     # CLIP Text
     path = cache / "clip/ViT-B-32__openai/textual/cix/model.cix"
     if path.exists():
-        clip_text_session = CixSession(path)
-        print(f"  Loaded CLIP Text: {path}")
+        try:
+            clip_text_session = CixSession(path)
+            print(f"  Loaded CLIP Text: {path}")
+        except Exception as e:
+            print(f"  Failed to load CLIP Text: {e}")
 
     # CLIP Tokenizer
     tokenizer_path = cache / "clip/ViT-B-32__openai/textual/tokenizer.json"
@@ -70,7 +76,8 @@ def load_models():
         clip_tokenizer = Tokenizer.from_file(str(tokenizer_path))
         # Load config for context_length and pad_token
         if tokenizer_cfg_path.exists():
-            cfg = json.load(open(tokenizer_cfg_path))
+            with open(tokenizer_cfg_path, encoding='utf-8') as f:
+                cfg = json.load(f)
             pad_token = cfg.get("pad_token", "<|endoftext|>")
         else:
             pad_token = "<|endoftext|>"
@@ -83,26 +90,38 @@ def load_models():
     # Face Detection
     path = cache / "facial-recognition/buffalo_l/detection/cix/model.cix"
     if path.exists():
-        face_det_session = CixSession(path)
-        print(f"  Loaded Face Detection: {path}")
+        try:
+            face_det_session = CixSession(path)
+            print(f"  Loaded Face Detection: {path}")
+        except Exception as e:
+            print(f"  Failed to load Face Detection: {e}")
 
     # Face Recognition
     path = cache / "facial-recognition/buffalo_l/recognition/cix/model.cix"
     if path.exists():
-        face_rec_session = CixSession(path)
-        print(f"  Loaded Face Recognition: {path}")
+        try:
+            face_rec_session = CixSession(path)
+            print(f"  Loaded Face Recognition: {path}")
+        except Exception as e:
+            print(f"  Failed to load Face Recognition: {e}")
 
     # OCR Detection (PP-OCRv4)
     path = cache / "ocr/PP-OCRv4_mobile/detection/cix/model.cix"
     if path.exists():
-        ocr_det_session = CixSession(path)
-        print(f"  Loaded OCR Detection: {path}")
+        try:
+            ocr_det_session = CixSession(path)
+            print(f"  Loaded OCR Detection: {path}")
+        except Exception as e:
+            print(f"  Failed to load OCR Detection: {e}")
 
     # OCR Recognition (PP-OCRv4)
     path = cache / "ocr/PP-OCRv4_mobile/recognition/cix/model.cix"
     if path.exists():
-        ocr_rec_session = CixSession(path)
-        print(f"  Loaded OCR Recognition: {path}")
+        try:
+            ocr_rec_session = CixSession(path)
+            print(f"  Loaded OCR Recognition: {path}")
+        except Exception as e:
+            print(f"  Failed to load OCR Recognition: {e}")
 
     # OCR Character Dictionary
     dict_path = cache / "ocr/PP-OCRv4_mobile/ppocr_keys_v1.txt"
@@ -127,7 +146,7 @@ def preprocess_clip_image(image: Image.Image) -> np.ndarray:
         new_w, new_h = size, int(h * size / w)
     else:
         new_h, new_w = size, int(w * size / h)
-    image = image.resize((new_w, new_h), Image.BILINEAR)
+    image = image.resize((new_w, new_h), Image.Resampling.BILINEAR)
 
     # Center crop
     left = (new_w - size) // 2
