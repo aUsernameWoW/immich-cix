@@ -1029,17 +1029,14 @@ export class V4l2m2mSwDecodeConfig extends BaseHWConfig {
       options.push(`scale=${this.getScaling(videoStream)}`);
     }
 
-    // V4L2M2M video encoders require yuv420p format
-    if (!videoStream.pixelFormat.endsWith('420p')) {
-      options.push('format=yuv420p');
-    } else if (options.length === 0 && this.shouldToneMap(videoStream)) {
-      // Handle tonemapping if needed
+    // Handle tonemapping for HDR content (software tonemapping)
+    if (this.shouldToneMap(videoStream)) {
       const tonemapOptions = this.getToneMapping(videoStream);
       options.push(...tonemapOptions);
     }
 
-    // Always ensure yuv420p for V4L2M2M encoder
-    if (options.length > 0 && !options.some((o) => o.includes('format=yuv420p'))) {
+    // V4L2M2M video encoders require yuv420p format
+    if (!options.some((o) => o.includes('format=yuv420p'))) {
       options.push('format=yuv420p');
     }
 
