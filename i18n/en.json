@@ -347,6 +347,7 @@
     "transcoding_acceleration_nvenc": "NVENC (requires NVIDIA GPU)",
     "transcoding_acceleration_qsv": "Quick Sync (requires 7th gen Intel CPU or later)",
     "transcoding_acceleration_rkmpp": "RKMPP (only on Rockchip SOCs)",
+    "transcoding_acceleration_v4l2m2m": "V4L2M2M (for ARM SoCs like CIX P1)",
     "transcoding_acceleration_vaapi": "VAAPI",
     "transcoding_accepted_audio_codecs": "Accepted audio codecs",
     "transcoding_accepted_audio_codecs_description": "Select which audio codecs do not need to be transcoded. Only used for certain transcode policies.",
