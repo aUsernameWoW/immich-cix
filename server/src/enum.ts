@@ -106,6 +106,11 @@ export enum Permission {
   AssetUpload = 'asset.upload',
   AssetReplace = 'asset.replace',
   AssetCopy = 'asset.copy',
+  AssetDerive = 'asset.derive',
+
+  AssetEditGet = 'asset.edit.get',
+  AssetEditCreate = 'asset.edit.create',
+  AssetEditDelete = 'asset.edit.delete',
 
   AlbumCreate = 'album.create',
   AlbumRead = 'album.read',
@@ -128,6 +133,11 @@ export enum Permission {
 
   ArchiveRead = 'archive.read',
 
+  BackupList = 'backup.list',
+  BackupDownload = 'backup.download',
+  BackupUpload = 'backup.upload',
+  BackupDelete = 'backup.delete',
+
   DuplicateRead = 'duplicate.read',
   DuplicateDelete = 'duplicate.delete',
 
@@ -135,6 +145,8 @@ export enum Permission {
   FaceRead = 'face.read',
   FaceUpdate = 'face.update',
   FaceDelete = 'face.delete',
+
+  FolderRead = 'folder.read',
 
   JobCreate = 'job.create',
   JobRead = 'job.read',
@@ -149,6 +161,9 @@ export enum Permission {
   TimelineDownload = 'timeline.download',
 
   Maintenance = 'maintenance',
+
+  MapRead = 'map.read',
+  MapSearch = 'map.search',
 
   MemoryCreate = 'memory.create',
   MemoryRead = 'memory.read',
@@ -356,11 +371,7 @@ export enum ManualJobName {
 
 export enum AssetPathType {
   Original = 'original',
-  FullSize = 'fullsize',
-  Preview = 'preview',
-  Thumbnail = 'thumbnail',
   EncodedVideo = 'encoded_video',
-  Sidecar = 'sidecar',
 }
 
 export enum PersonPathType {
@@ -371,7 +382,7 @@ export enum UserPathType {
   Profile = 'profile',
 }
 
-export type PathType = AssetPathType | PersonPathType | UserPathType;
+export type PathType = AssetFileType | AssetPathType | PersonPathType | UserPathType;
 
 export enum TranscodePolicy {
   All = 'all',
@@ -453,6 +464,11 @@ export enum LogLevel {
   Warn = 'warn',
   Error = 'error',
   Fatal = 'fatal',
+}
+
+export enum LogFormat {
+  Console = 'console',
+  Json = 'json',
 }
 
 export enum ApiCustomExtension {
@@ -551,6 +567,7 @@ export enum QueueName {
   BackupDatabase = 'backupDatabase',
   Ocr = 'ocr',
   Workflow = 'workflow',
+  Editor = 'editor',
 }
 
 export enum QueueJobStatus {
@@ -569,6 +586,7 @@ export enum JobName {
   AssetDetectFaces = 'AssetDetectFaces',
   AssetDetectDuplicatesQueueAll = 'AssetDetectDuplicatesQueueAll',
   AssetDetectDuplicates = 'AssetDetectDuplicates',
+  AssetEditThumbnailGeneration = 'AssetEditThumbnailGeneration',
   AssetEncodeVideoQueueAll = 'AssetEncodeVideoQueueAll',
   AssetEncodeVideo = 'AssetEncodeVideo',
   AssetEmptyTrash = 'AssetEmptyTrash',
@@ -680,12 +698,15 @@ export enum DatabaseLock {
   MediaLocation = 700,
   GetSystemConfig = 69,
   BackupDatabase = 42,
+  MaintenanceOperation = 621,
   MemoryCreation = 777,
 }
 
 export enum MaintenanceAction {
   Start = 'start',
   End = 'end',
+  SelectDatabaseRestore = 'select_database_restore',
+  RestoreDatabase = 'restore_database',
 }
 
 export enum ExitCode {
@@ -832,6 +853,7 @@ export enum ApiTag {
   Authentication = 'Authentication',
   AuthenticationAdmin = 'Authentication (admin)',
   Assets = 'Assets',
+  DatabaseBackups = 'Database Backups (admin)',
   Deprecated = 'Deprecated',
   Download = 'Download',
   Duplicates = 'Duplicates',
