@@ -1,6 +1,6 @@
 /**
  * Immich
- * 2.5.5
+ * 2.5.6
  * DO NOT MODIFY - This file has been generated using oazapfts.
  * See https://www.npmjs.com/package/oazapfts
  */
@@ -1132,9 +1132,11 @@ export type ValidateAccessTokenResponseDto = {
     /** Authentication status */
     authStatus: boolean;
 };
-export type AssetIdsDto = {
+export type DownloadArchiveDto = {
     /** Asset IDs */
     assetIds: string[];
+    /** Download edited asset if available */
+    edited?: boolean;
 };
 export type DownloadInfoDto = {
     /** Album ID to download */
@@ -2287,6 +2289,10 @@ export type SharedLinkCreateDto = {
     /** Shared link type */
     "type": SharedLinkType;
 };
+export type SharedLinkLoginDto = {
+    /** Shared link password */
+    password: string;
+};
 export type SharedLinkEditDto = {
     /** Allow downloads */
     allowDownload?: boolean;
@@ -2304,6 +2310,10 @@ export type SharedLinkEditDto = {
     showMetadata?: boolean;
     /** Custom URL slug */
     slug?: string | null;
+};
+export type AssetIdsDto = {
+    /** Asset IDs */
+    assetIds: string[];
 };
 export type AssetIdsResponseDto = {
     /** Asset ID */
@@ -3022,6 +3032,26 @@ export type SyncAssetFaceV1 = {
     id: string;
     imageHeight: number;
     imageWidth: number;
+    /** Person ID */
+    personId: string | null;
+    /** Source type */
+    sourceType: string;
+};
+export type SyncAssetFaceV2 = {
+    /** Asset ID */
+    assetId: string;
+    boundingBoxX1: number;
+    boundingBoxX2: number;
+    boundingBoxY1: number;
+    boundingBoxY2: number;
+    /** Face deleted at */
+    deletedAt: string | null;
+    /** Asset face ID */
+    id: string;
+    imageHeight: number;
+    imageWidth: number;
+    /** Is the face visible in the asset */
+    isVisible: boolean;
     /** Person ID */
     personId: string | null;
     /** Source type */
@@ -4429,10 +4459,10 @@ export function validateAccessToken(opts?: Oazapfts.RequestOpts) {
 /**
  * Download asset archive
  */
-export function downloadArchive({ key, slug, assetIdsDto }: {
+export function downloadArchive({ key, slug, downloadArchiveDto }: {
     key?: string;
     slug?: string;
-    assetIdsDto: AssetIdsDto;
+    downloadArchiveDto: DownloadArchiveDto;
 }, opts?: Oazapfts.RequestOpts) {
     return oazapfts.ok(oazapfts.fetchBlob<{
         status: 200;
@@ -4443,7 +4473,7 @@ export function downloadArchive({ key, slug, assetIdsDto }: {
     }))}`, oazapfts.json({
         ...opts,
         method: "POST",
-        body: assetIdsDto
+        body: downloadArchiveDto
     })));
 }
 /**
@@ -5862,6 +5892,26 @@ export function createSharedLink({ sharedLinkCreateDto }: {
     })));
 }
 /**
+ * Shared link login
+ */
+export function sharedLinkLogin({ key, slug, sharedLinkLoginDto }: {
+    key?: string;
+    slug?: string;
+    sharedLinkLoginDto: SharedLinkLoginDto;
+}, opts?: Oazapfts.RequestOpts) {
+    return oazapfts.ok(oazapfts.fetchJson<{
+        status: 201;
+        data: SharedLinkResponseDto;
+    }>(`/shared-links/login${QS.query(QS.explode({
+        key,
+        slug
+    }))}`, oazapfts.json({
+        ...opts,
+        method: "POST",
+        body: sharedLinkLoginDto
+    })));
+}
+/**
  * Retrieve current shared link
  */
 export function getMySharedLink({ key, password, slug, token }: {
@@ -7213,6 +7263,7 @@ export enum SyncEntityType {
     PersonV1 = "PersonV1",
     PersonDeleteV1 = "PersonDeleteV1",
     AssetFaceV1 = "AssetFaceV1",
+    AssetFaceV2 = "AssetFaceV2",
     AssetFaceDeleteV1 = "AssetFaceDeleteV1",
     UserMetadataV1 = "UserMetadataV1",
     UserMetadataDeleteV1 = "UserMetadataDeleteV1",
@@ -7240,6 +7291,7 @@ export enum SyncRequestType {
     UsersV1 = "UsersV1",
     PeopleV1 = "PeopleV1",
     AssetFacesV1 = "AssetFacesV1",
+    AssetFacesV2 = "AssetFacesV2",
     UserMetadataV1 = "UserMetadataV1"
 }
 export enum TranscodeHWAccel {
