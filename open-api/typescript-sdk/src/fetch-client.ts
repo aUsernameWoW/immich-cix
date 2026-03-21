@@ -1,6 +1,6 @@
 /**
  * Immich
- * 2.5.6
+ * 2.6.1
  * DO NOT MODIFY - This file has been generated using oazapfts.
  * See https://www.npmjs.com/package/oazapfts
  */
@@ -616,7 +616,7 @@ export type AssetResponseDto = {
     resized?: boolean;
     stack?: (AssetStackResponseDto) | null;
     tags?: TagResponseDto[];
-    /** Thumbhash for thumbnail generation */
+    /** Thumbhash for thumbnail generation (base64) also used as the c query param for thumbnail cache busting. */
     thumbhash: string | null;
     /** Asset type */
     "type": AssetTypeEnum;
@@ -834,8 +834,8 @@ export type AssetBulkUpdateDto = {
     latitude?: number;
     /** Longitude coordinate */
     longitude?: number;
-    /** Rating */
-    rating?: number;
+    /** Rating in range [1-5], or null for unrated */
+    rating?: number | null;
     /** Time zone (IANA timezone) */
     timeZone?: string;
     /** Asset visibility */
@@ -944,8 +944,8 @@ export type UpdateAssetDto = {
     livePhotoVideoId?: string | null;
     /** Longitude coordinate */
     longitude?: number;
-    /** Rating */
-    rating?: number;
+    /** Rating in range [1-5], or null for unrated */
+    rating?: number | null;
     /** Asset visibility */
     visibility?: AssetVisibility;
 };
@@ -959,38 +959,36 @@ export type CropParameters = {
     /** Top-Left Y coordinate of crop */
     y: number;
 };
-export type AssetEditActionCrop = {
-    /** Type of edit action to perform */
-    action: AssetEditAction;
-    parameters: CropParameters;
-};
 export type RotateParameters = {
     /** Rotation angle in degrees */
     angle: number;
-};
-export type AssetEditActionRotate = {
-    /** Type of edit action to perform */
-    action: AssetEditAction;
-    parameters: RotateParameters;
 };
 export type MirrorParameters = {
     /** Axis to mirror along */
     axis: MirrorAxis;
 };
-export type AssetEditActionMirror = {
+export type AssetEditActionItemResponseDto = {
     /** Type of edit action to perform */
     action: AssetEditAction;
-    parameters: MirrorParameters;
+    id: string;
+    /** List of edit actions to apply (crop, rotate, or mirror) */
+    parameters: CropParameters | RotateParameters | MirrorParameters;
 };
-export type AssetEditsDto = {
-    /** Asset ID to apply edits to */
+export type AssetEditsResponseDto = {
+    /** Asset ID these edits belong to */
     assetId: string;
-    /** List of edit actions to apply (crop, rotate, or mirror) */
-    edits: (AssetEditActionCrop | AssetEditActionRotate | AssetEditActionMirror)[];
+    /** List of edit actions applied to the asset */
+    edits: AssetEditActionItemResponseDto[];
 };
-export type AssetEditActionListDto = {
+export type AssetEditActionItemDto = {
+    /** Type of edit action to perform */
+    action: AssetEditAction;
     /** List of edit actions to apply (crop, rotate, or mirror) */
-    edits: (AssetEditActionCrop | AssetEditActionRotate | AssetEditActionMirror)[];
+    parameters: CropParameters | RotateParameters | MirrorParameters;
+};
+export type AssetEditsCreateDto = {
+    /** List of edit actions to apply (crop, rotate, or mirror) */
+    edits: AssetEditActionItemDto[];
 };
 export type AssetMetadataResponseDto = {
     /** Metadata key */
@@ -1406,12 +1404,16 @@ export type MemoryCreateDto = {
     /** Asset IDs to associate with memory */
     assetIds?: string[];
     data: OnThisDayDto;
+    /** Date when memory should be hidden */
+    hideAt?: string;
     /** Is memory saved */
     isSaved?: boolean;
     /** Memory date */
     memoryAt: string;
     /** Date when memory was seen */
     seenAt?: string;
+    /** Date when memory should be shown */
+    showAt?: string;
     /** Memory type */
     "type": MemoryType;
 };
@@ -1709,8 +1711,8 @@ export type MetadataSearchDto = {
     personIds?: string[];
     /** Filter by preview file path */
     previewPath?: string;
-    /** Filter by rating */
-    rating?: number;
+    /** Filter by rating [1-5], or null for unrated */
+    rating?: number | null;
     /** Number of results to return */
     size?: number;
     /** Filter by state/province name */
@@ -1825,8 +1827,8 @@ export type RandomSearchDto = {
     ocr?: string;
     /** Filter by person IDs */
     personIds?: string[];
-    /** Filter by rating */
-    rating?: number;
+    /** Filter by rating [1-5], or null for unrated */
+    rating?: number | null;
     /** Number of results to return */
     size?: number;
     /** Filter by state/province name */
@@ -1901,8 +1903,8 @@ export type SmartSearchDto = {
     query?: string;
     /** Asset ID to use as search reference */
     queryAssetId?: string;
-    /** Filter by rating */
-    rating?: number;
+    /** Filter by rating [1-5], or null for unrated */
+    rating?: number | null;
     /** Number of results to return */
     size?: number;
     /** Filter by state/province name */
@@ -1967,8 +1969,8 @@ export type StatisticsSearchDto = {
     ocr?: string;
     /** Filter by person IDs */
     personIds?: string[];
-    /** Filter by rating */
-    rating?: number;
+    /** Filter by rating [1-5], or null for unrated */
+    rating?: number | null;
     /** Filter by state/province name */
     state?: string | null;
     /** Filter by tag IDs */
@@ -2964,6 +2966,16 @@ export type SyncAlbumV1 = {
 export type SyncAssetDeleteV1 = {
     /** Asset ID */
     assetId: string;
+};
+export type SyncAssetEditDeleteV1 = {
+    editId: string;
+};
+export type SyncAssetEditV1 = {
+    action: AssetEditAction;
+    assetId: string;
+    id: string;
+    parameters: object;
+    sequence: number;
 };
 export type SyncAssetExifV1 = {
     /** Asset ID */
@@ -4149,7 +4161,7 @@ export function getAssetEdits({ id }: {
 }, opts?: Oazapfts.RequestOpts) {
     return oazapfts.ok(oazapfts.fetchJson<{
         status: 200;
-        data: AssetEditsDto;
+        data: AssetEditsResponseDto;
     }>(`/assets/${encodeURIComponent(id)}/edits`, {
         ...opts
     }));
@@ -4157,17 +4169,17 @@ export function getAssetEdits({ id }: {
 /**
  * Apply edits to an existing asset
  */
-export function editAsset({ id, assetEditActionListDto }: {
+export function editAsset({ id, assetEditsCreateDto }: {
     id: string;
-    assetEditActionListDto: AssetEditActionListDto;
+    assetEditsCreateDto: AssetEditsCreateDto;
 }, opts?: Oazapfts.RequestOpts) {
     return oazapfts.ok(oazapfts.fetchJson<{
         status: 200;
-        data: AssetEditsDto;
+        data: AssetEditsResponseDto;
     }>(`/assets/${encodeURIComponent(id)}/edits`, oazapfts.json({
         ...opts,
         method: "PUT",
-        body: assetEditActionListDto
+        body: assetEditsCreateDto
     })));
 }
 /**
@@ -5442,7 +5454,7 @@ export function searchLargeAssets({ albumIds, city, country, createdAfter, creat
     model?: string | null;
     ocr?: string;
     personIds?: string[];
-    rating?: number;
+    rating?: number | null;
     size?: number;
     state?: string | null;
     tagIds?: string[] | null;
@@ -5975,19 +5987,14 @@ export function updateSharedLink({ id, sharedLinkEditDto }: {
 /**
  * Remove assets from a shared link
  */
-export function removeSharedLinkAssets({ id, key, slug, assetIdsDto }: {
+export function removeSharedLinkAssets({ id, assetIdsDto }: {
     id: string;
-    key?: string;
-    slug?: string;
     assetIdsDto: AssetIdsDto;
 }, opts?: Oazapfts.RequestOpts) {
     return oazapfts.ok(oazapfts.fetchJson<{
         status: 200;
         data: AssetIdsResponseDto[];
-    }>(`/shared-links/${encodeURIComponent(id)}/assets${QS.query(QS.explode({
-        key,
-        slug
-    }))}`, oazapfts.json({
+    }>(`/shared-links/${encodeURIComponent(id)}/assets`, oazapfts.json({
         ...opts,
         method: "DELETE",
         body: assetIdsDto
@@ -6409,8 +6416,9 @@ export function tagAssets({ id, bulkIdsDto }: {
 /**
  * Get time bucket
  */
-export function getTimeBucket({ albumId, isFavorite, isTrashed, key, order, personId, slug, tagId, timeBucket, userId, visibility, withCoordinates, withPartners, withStacked }: {
+export function getTimeBucket({ albumId, bbox, isFavorite, isTrashed, key, order, personId, slug, tagId, timeBucket, userId, visibility, withCoordinates, withPartners, withStacked }: {
     albumId?: string;
+    bbox?: string;
     isFavorite?: boolean;
     isTrashed?: boolean;
     key?: string;
@@ -6430,6 +6438,7 @@ export function getTimeBucket({ albumId, isFavorite, isTrashed, key, order, pers
         data: TimeBucketAssetResponseDto;
     }>(`/timeline/bucket${QS.query(QS.explode({
         albumId,
+        bbox,
         isFavorite,
         isTrashed,
         key,
@@ -6450,8 +6459,9 @@ export function getTimeBucket({ albumId, isFavorite, isTrashed, key, order, pers
 /**
  * Get time buckets
  */
-export function getTimeBuckets({ albumId, isFavorite, isTrashed, key, order, personId, slug, tagId, userId, visibility, withCoordinates, withPartners, withStacked }: {
+export function getTimeBuckets({ albumId, bbox, isFavorite, isTrashed, key, order, personId, slug, tagId, userId, visibility, withCoordinates, withPartners, withStacked }: {
     albumId?: string;
+    bbox?: string;
     isFavorite?: boolean;
     isTrashed?: boolean;
     key?: string;
@@ -6470,6 +6480,7 @@ export function getTimeBuckets({ albumId, isFavorite, isTrashed, key, order, per
         data: TimeBucketsResponseDto[];
     }>(`/timeline/buckets${QS.query(QS.explode({
         albumId,
+        bbox,
         isFavorite,
         isTrashed,
         key,
@@ -7228,6 +7239,8 @@ export enum SyncEntityType {
     AssetV1 = "AssetV1",
     AssetDeleteV1 = "AssetDeleteV1",
     AssetExifV1 = "AssetExifV1",
+    AssetEditV1 = "AssetEditV1",
+    AssetEditDeleteV1 = "AssetEditDeleteV1",
     AssetMetadataV1 = "AssetMetadataV1",
     AssetMetadataDeleteV1 = "AssetMetadataDeleteV1",
     PartnerV1 = "PartnerV1",
@@ -7279,6 +7292,7 @@ export enum SyncRequestType {
     AlbumAssetExifsV1 = "AlbumAssetExifsV1",
     AssetsV1 = "AssetsV1",
     AssetExifsV1 = "AssetExifsV1",
+    AssetEditsV1 = "AssetEditsV1",
     AssetMetadataV1 = "AssetMetadataV1",
     AuthUsersV1 = "AuthUsersV1",
     MemoriesV1 = "MemoriesV1",
@@ -7306,6 +7320,7 @@ export enum AudioCodec {
     Mp3 = "mp3",
     Aac = "aac",
     Libopus = "libopus",
+    Opus = "opus",
     PcmS16Le = "pcm_s16le"
 }
 export enum VideoContainer {
