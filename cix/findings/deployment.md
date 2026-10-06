@@ -99,4 +99,6 @@ curl -H "x-api-key: $KEY" localhost:2283/api/users/me
 - `pkill -f <pattern>` 会匹配到执行它的 shell 自己（命令行里含 pattern）→ 用 `'[-]b 127.0.0.1:3013'` 这种写法
 - `set -o pipefail` + `grep -q`：grep 提前退出导致上游 SIGPIPE，管道被判失败 → 先把输出存进变量再 grep
 - zsh 里单独的 `=====` 会被当成 `=` 展开报错
+- zsh 里 `$q:wait` 的 `:w` 会被当成变量修饰符，拼出来的 key 是错的（看起来像队列为空）→ 写成 `${q}:wait`
+- BullMQ 的队列在 Redis 里是 `immich_bull:<queue>:wait`（list）/ `:active`；数量以 `GET /api/queues/<queue>` 为准
 - 数据库时间是 UTC；在 SQL 里写本地时间要带时区（`'2026-10-06 15:28+08'`）
