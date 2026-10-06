@@ -40,7 +40,7 @@ import {
 } from 'src/types';
 import { getAssetFile, getDimensions } from 'src/utils/asset.util';
 import { checkFaceVisibility, checkOcrVisibility } from 'src/utils/editor';
-import { BaseConfig, ThumbnailConfig } from 'src/utils/media';
+import { BaseConfig, setTonemapxAvailable, ThumbnailConfig } from 'src/utils/media';
 import { mimeTypes } from 'src/utils/mime-types';
 import { batched, clamp } from 'src/utils/misc';
 import { getOutputDimensions } from 'src/utils/transform';
@@ -62,7 +62,15 @@ export class MediaService extends BaseService {
 
   @OnEvent({ name: 'AppBootstrap', workers: [ImmichWorker.Microservices] })
   async onBootstrap() {
-    this.videoInterfaces = await this.storageCore.getVideoInterfaces();
+    const [videoInterfaces, hasTonemapx] = await Promise.all([
+      this.storageCore.getVideoInterfaces(),
+      this.mediaRepository.hasFilter('tonemapx'),
+    ]);
+    this.videoInterfaces = videoInterfaces;
+    if (!hasTonemapx) {
+      this.logger.log('ffmpeg has no tonemapx filter, falling back to zscale for tone-mapping');
+    }
+    setTonemapxAvailable(hasTonemapx);
   }
 
   @OnJob({ name: JobName.AssetGenerateThumbnailsQueueAll, queue: QueueName.ThumbnailGeneration })
