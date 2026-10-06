@@ -2,7 +2,7 @@
 # Supports CIX P1 SoC (Orion O6) with Zhouyi NPU
 from __future__ import annotations
 
-import os
+import math
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -17,6 +17,7 @@ def _check_npu_available() -> bool:
     """Check if CIX NPU runtime (libnoe) is available."""
     try:
         from libnoe import NPU, noe_status_t
+
         npu = NPU()
         ret = npu.noe_init_context()
         # ret can be noe_status_t enum or int
@@ -30,7 +31,7 @@ def _check_npu_available() -> bool:
     return False
 
 
-is_available = _check_npu_available() and getattr(settings, 'cix', True)
+is_available = _check_npu_available() and getattr(settings, "cix", True)
 model_prefix = Path("cix") if is_available else None
 
 
@@ -77,8 +78,30 @@ INPUT_OUTPUT_MAPPING: dict[str, dict[str, Any]] = {
 
 class CixNode(NamedTuple):
     """Represents a tensor node with name and shape."""
+
     name: str | None
     shape: tuple[int, ...]
+
+
+def _numpy_dtype(data_type: Any) -> np.dtype[Any]:
+    """Map a libnoe tensor data type to the matching numpy dtype."""
+    from libnoe import noe_data_type_t as t
+
+    dtypes = {
+        t.NOE_DATA_TYPE_S8: np.int8,
+        t.NOE_DATA_TYPE_U8: np.uint8,
+        t.NOE_DATA_TYPE_S16: np.int16,
+        t.NOE_DATA_TYPE_U16: np.uint16,
+        t.NOE_DATA_TYPE_S32: np.int32,
+        t.NOE_DATA_TYPE_U32: np.uint32,
+        t.NOE_DATA_TYPE_S64: np.int64,
+        t.NOE_DATA_TYPE_U64: np.uint64,
+        t.NOE_DATA_TYPE_F16: np.float16,
+        t.NOE_DATA_TYPE_F32: np.float32,
+    }
+    if data_type not in dtypes:
+        raise ValueError(f"Unsupported CIX tensor data type: {data_type}")
+    return np.dtype(dtypes[data_type])
 
 
 class CixSession:
@@ -148,7 +171,7 @@ class CixSession:
     @staticmethod
     def _check_status(ret: Any, msg: str) -> None:
         """Check libnoe return value (enum or int) and raise on failure."""
-        val = ret.value if hasattr(ret, 'value') else int(ret)
+        val = ret.value if hasattr(ret, "value") else int(ret)
         if val != 0:
             raise RuntimeError(f"{msg}: {ret}")
 
@@ -157,7 +180,7 @@ class CixSession:
         """Unpack libnoe result — new API returns (status, data) tuple,
         old API returned {'ret': ..., 'data': ...} dict."""
         if isinstance(result, dict):
-            return result['ret'], result['data']
+            return result["ret"], result["data"]
         elif isinstance(result, tuple):
             return result[0], result[1]
         else:
@@ -165,7 +188,7 @@ class CixSession:
 
     def _init_engine(self) -> None:
         """Initialize the CIX NPU engine."""
-        from libnoe import NPU, NOE_TENSOR_TYPE_INPUT, NOE_TENSOR_TYPE_OUTPUT
+        from libnoe import NOE_TENSOR_TYPE_INPUT, NOE_TENSOR_TYPE_OUTPUT, NPU
 
         self.npu = NPU()
 
@@ -181,6 +204,7 @@ class CixSession:
         # Create job — new API needs noe_create_job_cfg_t(), old used {}
         try:
             from libnoe import noe_create_job_cfg_t
+
             job_cfg: Any = noe_create_job_cfg_t()
         except ImportError:
             job_cfg = {}
@@ -206,18 +230,55 @@ class CixSession:
             self.output_descs.append(desc)
             log.debug(f"Output tensor {i}: scale={desc.scale}, zp={desc.zero_point}, size={desc.size}")
 
+        self.input_dtypes = [_numpy_dtype(desc.data_type) for desc in self.input_descs]
+        self.output_dtypes = [_numpy_dtype(desc.data_type) for desc in self.output_descs]
+
         self._initialized = True
         log.debug(f"CIX model initialized: {in_count} inputs, {out_count} outputs")
+
+    @property
+    def is_clip(self) -> bool:
+        return self.model_type in ("clip_visual", "clip_textual")
+
+    def _clip_shape(self, desc: Any, dtype: np.dtype[Any], is_input: bool) -> tuple[int, ...]:
+        """CLIP models differ in context length and embedding size, so derive their shapes from the descriptors."""
+        count = desc.size // dtype.itemsize
+        if is_input and self.model_type == "clip_visual":
+            side = math.isqrt(count // 3)
+            return (1, 3, side, side)
+        return (1, count)
 
     def get_inputs(self) -> list[CixNode]:
         """Get input tensor specifications."""
         mapping = INPUT_OUTPUT_MAPPING.get(self.model_type, {}).get("input", {})
+        if self.is_clip:
+            names = list(mapping) or [None]
+            return [
+                CixNode(name=names[0] if i == 0 else None, shape=self._clip_shape(desc, dtype, is_input=True))
+                for i, (desc, dtype) in enumerate(zip(self.input_descs, self.input_dtypes))
+            ]
         return [CixNode(name=k, shape=v) for k, v in mapping.items()]
 
     def get_outputs(self) -> list[CixNode]:
         """Get output tensor specifications."""
         mapping = INPUT_OUTPUT_MAPPING.get(self.model_type, {}).get("output", {})
+        if self.is_clip:
+            names = list(mapping) or [None]
+            return [
+                CixNode(name=names[0] if i == 0 else None, shape=self._clip_shape(desc, dtype, is_input=False))
+                for i, (desc, dtype) in enumerate(zip(self.output_descs, self.output_dtypes))
+            ]
         return [CixNode(name=k, shape=v) for k, v in mapping.items()]
+
+    @staticmethod
+    def _to_tensor(data: NDArray[Any], desc: Any, dtype: np.dtype[Any]) -> NDArray[Any]:
+        """Convert an input array to the tensor's data type, quantizing float data for integer tensors."""
+        if np.issubdtype(dtype, np.floating) or np.issubdtype(data.dtype, np.integer):
+            # float tensors take the values as is, and integer data (e.g. token ids) isn't quantized
+            return data.astype(dtype)
+        info = np.iinfo(dtype)
+        quantized = np.round(data.astype(np.float32) * desc.scale - desc.zero_point)
+        return np.clip(quantized, info.min, info.max).astype(dtype)
 
     def run(
         self,
@@ -236,44 +297,15 @@ class CixSession:
         Returns:
             List of output numpy arrays in float32 format
         """
-        from libnoe import NOE_TENSOR_TYPE_OUTPUT
-
-        # Load input tensors with quantization
-        from libnoe import noe_data_type_t
-
         for i, (name, data) in enumerate(input_feed.items()):
-            desc = self.input_descs[i]
-
-            # Handle different input data types
-            if desc.data_type == noe_data_type_t.NOE_DATA_TYPE_S32:
-                # Int32 input (e.g., CLIP text tokens) - no quantization needed
-                q_data = data.astype(np.int32)
-            elif desc.data_type == noe_data_type_t.NOE_DATA_TYPE_S8:
-                # Int8 input - apply quantization
-                q_data = np.round(
-                    data.astype(np.float32) * desc.scale - desc.zero_point
-                )
-                q_data = np.clip(q_data, -128, 127).astype(np.int8)
-            elif desc.data_type == noe_data_type_t.NOE_DATA_TYPE_U8:
-                # Uint8 input - apply quantization
-                q_data = np.round(
-                    data.astype(np.float32) * desc.scale - desc.zero_point
-                )
-                q_data = np.clip(q_data, 0, 255).astype(np.uint8)
-            else:
-                # Default: try int8 quantization
-                q_data = np.round(
-                    data.astype(np.float32) * desc.scale - desc.zero_point
-                )
-                q_data = np.clip(q_data, -128, 127).astype(np.int8)
+            desc, dtype = self.input_descs[i], self.input_dtypes[i]
+            q_data = self._to_tensor(data, desc, dtype)
 
             # Verify size matches
             expected_size = desc.size
             actual_size = len(q_data.tobytes())
             if actual_size != expected_size:
-                raise RuntimeError(
-                    f"Input size mismatch for '{name}': expected {expected_size}, got {actual_size}"
-                )
+                raise RuntimeError(f"Input size mismatch for '{name}': expected {expected_size}, got {actual_size}")
 
             self.npu.noe_load_tensor(self.job_id, i, q_data.tobytes())
 
@@ -284,33 +316,29 @@ class CixSession:
         from libnoe import tensor_type_t
 
         outputs: list[NDArray[np.float32]] = []
-        for i, desc in enumerate(self.output_descs):
-            if desc.data_type == noe_data_type_t.NOE_DATA_TYPE_U8:
-                np_dtype = np.uint8
-            else:
-                np_dtype = np.int8
-
+        output_shapes = list(INPUT_OUTPUT_MAPPING.get(self.model_type, {}).get("output", {}).values())
+        for i, (desc, dtype) in enumerate(zip(self.output_descs, self.output_dtypes)):
             # New API: noe_get_tensor(job_id, tensor_type, index) → (status, bytes)
             # Old API: noe_get_tensor(job_id, tensor_type, index, d_type) → {'ret': ..., 'data': ...}
-            result = self.npu.noe_get_tensor(
-                self.job_id, tensor_type_t.NOE_TENSOR_TYPE_OUTPUT, i
-            )
+            result = self.npu.noe_get_tensor(self.job_id, tensor_type_t.NOE_TENSOR_TYPE_OUTPUT, i)
             status, data = self._unpack(result)
             self._check_status(status, f"Failed to get output tensor {i}")
 
             # New API returns bytes, old API returned list
             if isinstance(data, (bytes, bytearray)):
-                out_array = np.frombuffer(data, dtype=np_dtype)
+                out_array = np.frombuffer(data, dtype=dtype)
             else:
-                out_array = np.array(data, dtype=np_dtype)
+                out_array = np.array(data, dtype=dtype)
 
-            # Dequantize: x = (q + zero_point) / scale
-            out_float = (out_array.astype(np.float32) + desc.zero_point) / desc.scale
+            if np.issubdtype(dtype, np.floating):
+                out_float = out_array.astype(np.float32)
+            else:
+                # Dequantize: x = (q + zero_point) / scale
+                out_float = (out_array.astype(np.float32) + desc.zero_point) / desc.scale
 
-            # Reshape to expected output shape from mapping
-            output_mapping = INPUT_OUTPUT_MAPPING.get(self.model_type, {}).get("output", {})
-            output_shapes = list(output_mapping.values())
-            if i < len(output_shapes):
+            if self.is_clip:
+                out_float = out_float.reshape(1, -1)
+            elif i < len(output_shapes):
                 try:
                     out_float = out_float.reshape(output_shapes[i])
                 except ValueError:
@@ -326,7 +354,7 @@ class CixSession:
 
     def release(self) -> None:
         """Release NPU resources."""
-        if hasattr(self, '_initialized') and self._initialized:
+        if hasattr(self, "_initialized") and self._initialized:
             try:
                 self.npu.noe_clean_job(self.job_id)
                 self.npu.noe_unload_graph(self.graph_id)

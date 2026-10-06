@@ -29,6 +29,7 @@ from immich_ml.models.ocr.detection import TextDetector
 from immich_ml.models.ocr.recognition import TextRecognizer
 from immich_ml.schemas import ModelFormat, ModelPrecision, ModelTask, ModelType
 from immich_ml.sessions.ann import AnnSession
+from immich_ml.sessions.cix import CixSession
 from immich_ml.sessions.ort import OrtSession
 from immich_ml.sessions.rknn import RknnSession, run_inference
 
@@ -560,6 +561,44 @@ class TestAnnSession:
         np_spy.assert_has_calls([mock.call(input1), mock.call(input2)])
 
 
+class TestCixSession:
+    def test_passes_token_ids_through_without_quantizing(self) -> None:
+        desc = SimpleNamespace(scale=1.0, zero_point=0)
+        tokens = np.array([[101, 2769, 102, 0]], dtype=np.int32)
+
+        tensor = CixSession._to_tensor(tokens, desc, np.dtype(np.int32))
+
+        np.testing.assert_array_equal(tensor, tokens)
+
+    def test_quantizes_float_input_for_integer_tensors(self) -> None:
+        desc = SimpleNamespace(scale=10.0, zero_point=2)
+        pixels = np.array([0.5, -1.0, 100.0], dtype=np.float32)
+
+        tensor = CixSession._to_tensor(pixels, desc, np.dtype(np.int8))
+
+        assert tensor.dtype == np.int8
+        np.testing.assert_array_equal(tensor, [3, -12, 127])
+
+    def test_keeps_float_input_for_float_tensors(self) -> None:
+        pixels = np.array([0.25, -1.5], dtype=np.float32)
+
+        tensor = CixSession._to_tensor(pixels, SimpleNamespace(scale=1.0, zero_point=0), np.dtype(np.float16))
+
+        assert tensor.dtype == np.float16
+        np.testing.assert_array_equal(tensor, [0.25, -1.5])
+
+    def test_maps_tensor_data_types(self) -> None:
+        libnoe = pytest.importorskip("libnoe")
+        from immich_ml.sessions.cix import _numpy_dtype
+
+        t = libnoe.noe_data_type_t
+        assert _numpy_dtype(t.NOE_DATA_TYPE_S16) == np.int16
+        assert _numpy_dtype(t.NOE_DATA_TYPE_F16) == np.float16
+        assert _numpy_dtype(t.NOE_DATA_TYPE_U8) == np.uint8
+        with pytest.raises(ValueError):
+            _numpy_dtype(t.NOE_DATA_TYPE_BF16)
+
+
 class TestRknnSession:
     def test_creates_rknn_session(self, rknn_session: mock.Mock, info: mock.Mock, mocker: MockerFixture) -> None:
         model_path = mock.MagicMock(spec=Path)
@@ -612,6 +651,27 @@ class TestCLIP:
         assert isinstance(embedding, list)
         assert len(embedding) == clip_model_cfg["embed_dim"]
         mocked.run.assert_called_once()
+
+    def test_squash_resize_mode(
+        self,
+        mocker: MockerFixture,
+        clip_model_cfg: dict[str, Any],
+        clip_preprocess_cfg: dict[str, Any],
+    ) -> None:
+        mocker.patch.object(OpenClipVisualEncoder, "download")
+        mocker.patch.object(OpenClipVisualEncoder, "model_cfg", clip_model_cfg)
+        mocker.patch.object(OpenClipVisualEncoder, "preprocess_cfg", {**clip_preprocess_cfg, "resize_mode": "squash"})
+        mocker.patch.object(InferenceModel, "_make_session", autospec=True)
+        # a center crop would cut off the blue strip on the right
+        image = Image.new("RGB", (400, 100), (255, 0, 0))
+        image.paste((0, 0, 255), (300, 0, 400, 100))
+
+        clip_encoder = OpenClipVisualEncoder("ViT-B-32__openai", cache_dir="test_cache")
+        clip_encoder.load()
+        pixels = clip_encoder.transform(image)["image"]
+
+        assert pixels.shape == (1, 3, 224, 224)
+        assert pixels[0, 2, 112, -1] > pixels[0, 0, 112, -1]
 
     def test_basic_text(
         self,

@@ -64,14 +64,19 @@ class OpenClipVisualEncoder(BaseCLIPVisualEncoder):
         self.size = size[0] if isinstance(size, list) else size
 
         self.resampling = get_pil_resampling(self.preprocess_cfg["interpolation"])
+        # open_clip resize modes: 'shortest' (resize + center crop) or 'squash' (stretch to a square, e.g. Chinese-CLIP)
+        self.resize_mode = self.preprocess_cfg.get("resize_mode", "shortest")
         self.mean = np.array(self.preprocess_cfg["mean"], dtype=np.float32)
         self.std = np.array(self.preprocess_cfg["std"], dtype=np.float32)
 
         return super()._load()
 
     def transform(self, image: Image.Image) -> dict[str, NDArray[np.float32]]:
-        image = resize_pil(image, self.size)
-        image = crop_pil(image, self.size)
+        if self.resize_mode == "squash":
+            image = image.resize((self.size, self.size), resample=self.resampling)
+        else:
+            image = resize_pil(image, self.size)
+            image = crop_pil(image, self.size)
         image_np = to_numpy(image)
         image_np = normalize(image_np, self.mean, self.std)
         return {"image": np.expand_dims(image_np.transpose(2, 0, 1), 0)}
