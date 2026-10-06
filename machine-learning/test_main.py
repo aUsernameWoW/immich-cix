@@ -108,6 +108,24 @@ class TestBase:
 
         assert encoder.model_format == ModelFormat.RKNN
 
+    def test_sets_default_model_format_to_cix_if_available(self, mocker: MockerFixture) -> None:
+        mocker.patch("immich_ml.sessions.cix.is_available", True)
+        mocker.patch("immich_ml.sessions.rknn.is_available", True)
+
+        encoder = OpenClipTextualEncoder("ViT-B-32__openai")
+
+        assert encoder.model_format == ModelFormat.CIX
+
+    def test_creates_cix_session_for_cix_model(self, mocker: MockerFixture) -> None:
+        cix_session = mocker.patch("immich_ml.sessions.cix.CixSession")
+        model_path = mock.Mock(suffix=".cix")
+        model_path.is_file.return_value = True
+
+        session = OpenClipTextualEncoder("ViT-B-32__openai")._make_session(model_path)
+
+        cix_session.assert_called_once_with(model_path)
+        assert session == cix_session.return_value
+
     def test_casts_cache_dir_string_to_path(self) -> None:
         cache_dir = "/test_cache"
         encoder = OpenClipTextualEncoder("ViT-B-32__openai", cache_dir=cache_dir)

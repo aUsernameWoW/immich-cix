@@ -68,9 +68,10 @@ class InferenceModel(ABC):
 
     def _download(self) -> None:
         ignored_patterns: dict[ModelFormat, list[str]] = {
-            ModelFormat.ONNX: ["*.armnn", "*.rknn", "*.cix"],
-            ModelFormat.ARMNN: ["*.rknn", "*.cix"],
-            ModelFormat.RKNN: ["*.armnn", "*.cix"],
+            ModelFormat.ONNX: ["*.armnn", "*.rknn"],
+            ModelFormat.ARMNN: ["*.rknn"],
+            ModelFormat.RKNN: ["*.armnn"],
+            # CIX models aren't on Hugging Face and have to be deployed manually
             ModelFormat.CIX: ["*.armnn", "*.rknn"],
         }
 
