@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 from io import BytesIO
 from pathlib import Path
 from random import randint
@@ -586,6 +587,17 @@ class TestCixSession:
 
         assert tensor.dtype == np.float16
         np.testing.assert_array_equal(tensor, [0.25, -1.5])
+
+    def test_serializes_inference(self, mocker: MockerFixture) -> None:
+        session = CixSession.__new__(CixSession)
+        session._lock = threading.Lock()
+        held = []
+        mocker.patch.object(session, "_run", side_effect=lambda feed: held.append(session._lock.locked()) or [])
+
+        session.run(None, {"text": np.zeros((1, 52), dtype=np.int32)})
+
+        assert held == [True]
+        assert not session._lock.locked()
 
     def test_maps_tensor_data_types(self) -> None:
         libnoe = pytest.importorskip("libnoe")

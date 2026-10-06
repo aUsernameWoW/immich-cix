@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -116,6 +117,8 @@ class CixSession:
         self.model_path = model_path
         self.model_type = self._detect_model_type(model_path)
         self._initialized = False
+        # one NPU job per session: concurrent requests would overwrite each other's tensors
+        self._lock = threading.Lock()
 
         log.info(f"Loading CIX NPU model from {model_path}")
         self._init_engine()
@@ -297,6 +300,12 @@ class CixSession:
         Returns:
             List of output numpy arrays in float32 format
         """
+        with self._lock:
+            return self._run(input_feed)
+
+    def _run(
+        self, input_feed: dict[str, NDArray[np.float32]] | dict[str, NDArray[np.int32]]
+    ) -> list[NDArray[np.float32]]:
         for i, (name, data) in enumerate(input_feed.items()):
             desc, dtype = self.input_descs[i], self.input_dtypes[i]
             q_data = self._to_tensor(data, desc, dtype)
