@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 import onnx
 import onnxruntime as ort
@@ -23,6 +24,35 @@ from immich_ml.schemas import (
 )
 
 
+class _CixArcFaceWrapper:
+    """ArcFaceONNX-compatible wrapper for CIX NPU sessions.
+
+    ArcFaceONNX.__init__ does onnx.load(model_file) to detect normalization
+    parameters, which fails for .cix files. This wrapper provides the same
+    get_feat() interface with hardcoded normalization for standard ArcFace models.
+    """
+
+    def __init__(self, session: ModelSession) -> None:
+        self.session = session
+        # Standard ArcFace normalization (non-mxnet models)
+        self.input_mean = 127.5
+        self.input_std = 127.5
+        input_cfg = session.get_inputs()[0]
+        self.input_size = tuple(input_cfg.shape[2:4][::-1])
+        self.input_name = input_cfg.name
+        self.output_names = [o.name for o in session.get_outputs()]
+
+    def get_feat(self, imgs: list[NDArray[np.uint8]]) -> NDArray[np.float32]:
+        if not isinstance(imgs, list):
+            imgs = [imgs]
+        blob = cv2.dnn.blobFromImages(
+            imgs, 1.0 / self.input_std, self.input_size,
+            (self.input_mean, self.input_mean, self.input_mean), swapRB=True,
+        )
+        net_out: NDArray[np.float32] = self.session.run(self.output_names, {self.input_name: blob})[0]
+        return net_out
+
+
 class FaceRecognizer(InferenceModel):
     depends = [(ModelType.DETECTION, ModelTask.FACIAL_RECOGNITION)]
     identity = (ModelType.RECOGNITION, ModelTask.FACIAL_RECOGNITION)
@@ -34,13 +64,17 @@ class FaceRecognizer(InferenceModel):
 
     def _load(self) -> ModelSession:
         session = self._make_session(self.model_path)
-        if (not self.batch_size or self.batch_size > 1) and str(session.get_inputs()[0].shape[0]) != "batch":
-            self._add_batch_axis(self.model_path)
-            session = self._make_session(self.model_path)
-        self.model = ArcFaceONNX(
-            self.model_path_for_format(ModelFormat.ONNX).as_posix(),
-            session=session,
-        )
+        if self.model_format == ModelFormat.CIX:
+            # ArcFaceONNX does onnx.load() which fails for .cix files
+            self.model = _CixArcFaceWrapper(session)
+        else:
+            if (not self.batch_size or self.batch_size > 1) and str(session.get_inputs()[0].shape[0]) != "batch":
+                self._add_batch_axis(self.model_path)
+                session = self._make_session(self.model_path)
+            self.model = ArcFaceONNX(
+                self.model_path_for_format(ModelFormat.ONNX).as_posix(),
+                session=session,
+            )
         return session
 
     def _predict(

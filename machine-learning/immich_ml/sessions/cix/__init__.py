@@ -145,6 +145,24 @@ class CixSession:
         log.warning(f"Could not detect model type for {path}, defaulting to detection")
         return "detection"
 
+    @staticmethod
+    def _check_status(ret: Any, msg: str) -> None:
+        """Check libnoe return value (enum or int) and raise on failure."""
+        val = ret.value if hasattr(ret, 'value') else int(ret)
+        if val != 0:
+            raise RuntimeError(f"{msg}: {ret}")
+
+    @staticmethod
+    def _unpack(result: Any) -> tuple[Any, Any]:
+        """Unpack libnoe result — new API returns (status, data) tuple,
+        old API returned {'ret': ..., 'data': ...} dict."""
+        if isinstance(result, dict):
+            return result['ret'], result['data']
+        elif isinstance(result, tuple):
+            return result[0], result[1]
+        else:
+            return result, None
+
     def _init_engine(self) -> None:
         """Initialize the CIX NPU engine."""
         from libnoe import NPU, NOE_TENSOR_TYPE_INPUT, NOE_TENSOR_TYPE_OUTPUT
@@ -153,44 +171,36 @@ class CixSession:
 
         # Initialize context
         ret = self.npu.noe_init_context()
-        # Handle both enum and int return types
-        if hasattr(ret, 'value'):
-            ret_val = ret.value if hasattr(ret, 'value') else ret
-        else:
-            ret_val = ret
-        if ret_val != 0:
-            raise RuntimeError(f"Failed to initialize CIX NPU context: {ret}")
+        self._check_status(ret, "Failed to initialize CIX NPU context")
 
-        # Load graph - returns dict {'data': graph_id, 'ret': status}
-        result = self.npu.noe_load_graph(str(self.model_path))
-        if result['ret'] != 0:
-            self.npu.noe_deinit_context()
-            raise RuntimeError(f"Failed to load CIX graph: {self.model_path}, ret={result['ret']}")
-        self.graph_id = result['data']
+        # Load graph
+        status, graph_id = self._unpack(self.npu.noe_load_graph(str(self.model_path)))
+        self._check_status(status, f"Failed to load CIX graph: {self.model_path}")
+        self.graph_id = graph_id
 
-        # Create job - returns dict {'data': job_id, 'ret': status}
-        job_result = self.npu.noe_create_job(self.graph_id, {})
-        if job_result['ret'] != 0:
-            self.npu.noe_unload_graph(self.graph_id)
-            self.npu.noe_deinit_context()
-            raise RuntimeError(f"Failed to create CIX job: ret={job_result['ret']}")
-        self.job_id = job_result['data']
+        # Create job — new API needs noe_create_job_cfg_t(), old used {}
+        try:
+            from libnoe import noe_create_job_cfg_t
+            job_cfg: Any = noe_create_job_cfg_t()
+        except ImportError:
+            job_cfg = {}
+        status, job_id = self._unpack(self.npu.noe_create_job(self.graph_id, job_cfg))
+        self._check_status(status, "Failed to create CIX job")
+        self.job_id = job_id
 
         # Setup tensor descriptors
         self.input_descs = []
         self.output_descs = []
 
-        # Get input tensors - returns dict
-        in_result = self.npu.noe_get_tensor_count(self.graph_id, NOE_TENSOR_TYPE_INPUT)
-        in_count = in_result['data']
+        # Get input tensors
+        _, in_count = self._unpack(self.npu.noe_get_tensor_count(self.graph_id, NOE_TENSOR_TYPE_INPUT))
         for i in range(in_count):
             desc = self.npu.noe_get_tensor_descriptor(self.graph_id, NOE_TENSOR_TYPE_INPUT, i)
             self.input_descs.append(desc)
             log.debug(f"Input tensor {i}: scale={desc.scale}, zp={desc.zero_point}, size={desc.size}")
 
         # Get output tensors
-        out_result = self.npu.noe_get_tensor_count(self.graph_id, NOE_TENSOR_TYPE_OUTPUT)
-        out_count = out_result['data']
+        _, out_count = self._unpack(self.npu.noe_get_tensor_count(self.graph_id, NOE_TENSOR_TYPE_OUTPUT))
         for i in range(out_count):
             desc = self.npu.noe_get_tensor_descriptor(self.graph_id, NOE_TENSOR_TYPE_OUTPUT, i)
             self.output_descs.append(desc)
@@ -271,35 +281,48 @@ class CixSession:
         self.npu.noe_job_infer_sync(self.job_id, -1)
 
         # Get and dequantize outputs
-        from libnoe import D_INT8, D_UINT8, tensor_type_t
+        from libnoe import tensor_type_t
 
         outputs: list[NDArray[np.float32]] = []
         for i, desc in enumerate(self.output_descs):
-            # Select correct data type based on tensor descriptor
             if desc.data_type == noe_data_type_t.NOE_DATA_TYPE_U8:
-                d_type = D_UINT8
                 np_dtype = np.uint8
             else:
-                d_type = D_INT8
                 np_dtype = np.int8
 
-            # noe_get_tensor requires: job_id, tensor_type, tensor_index, data_size
+            # New API: noe_get_tensor(job_id, tensor_type, index) → (status, bytes)
+            # Old API: noe_get_tensor(job_id, tensor_type, index, d_type) → {'ret': ..., 'data': ...}
             result = self.npu.noe_get_tensor(
-                self.job_id, tensor_type_t.NOE_TENSOR_TYPE_OUTPUT, i, d_type
+                self.job_id, tensor_type_t.NOE_TENSOR_TYPE_OUTPUT, i
             )
-            if result['ret'][0] != 0:
-                raise RuntimeError(f"Failed to get output tensor {i}")
-            data = result['data']
+            status, data = self._unpack(result)
+            self._check_status(status, f"Failed to get output tensor {i}")
 
-            # Convert list to numpy array
-            out_array = np.array(data, dtype=np_dtype)
+            # New API returns bytes, old API returned list
+            if isinstance(data, (bytes, bytearray)):
+                out_array = np.frombuffer(data, dtype=np_dtype)
+            else:
+                out_array = np.array(data, dtype=np_dtype)
 
             # Dequantize: x = (q + zero_point) / scale
             out_float = (out_array.astype(np.float32) + desc.zero_point) / desc.scale
 
+            # Reshape to expected output shape from mapping
+            output_mapping = INPUT_OUTPUT_MAPPING.get(self.model_type, {}).get("output", {})
+            output_shapes = list(output_mapping.values())
+            if i < len(output_shapes):
+                try:
+                    out_float = out_float.reshape(output_shapes[i])
+                except ValueError:
+                    pass  # Keep flat if reshape fails
+
             outputs.append(out_float)
 
         return outputs
+
+    def set_providers(self, providers: list[str], **kwargs: Any) -> None:
+        """No-op for compatibility with insightface's RetinaFace/ArcFaceONNX."""
+        pass
 
     def release(self) -> None:
         """Release NPU resources."""
