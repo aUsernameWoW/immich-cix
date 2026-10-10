@@ -428,11 +428,14 @@ export class BaseConfig implements VideoCodecSWConfig {
 
   getZscaleToneMapping(range: 'pc' | 'tv') {
     const { primaries, transfer, matrix } = this.getColors();
+    // Without a peak, the tonemap filter derives it from the frame's HDR metadata, which some phones fill with nonsense
+    // (e.g. a 0.5 nit mastering display) that wrecks the colors, or from the frame's transfer, which the V4L2M2M
+    // decoders don't pass on. 10 (1000 nits) is what hardware-decoded frames have always been tone-mapped with.
     return [
       'zscale=t=linear:npl=100',
       'format=gbrpf32le',
       `zscale=p=${primaries}`,
-      `tonemap=tonemap=${this.config.tonemap}:desat=0`,
+      `tonemap=tonemap=${this.config.tonemap}:desat=0:peak=10`,
       `zscale=t=${transfer}:m=${matrix}:r=${range}`,
       'format=yuv420p',
     ];
