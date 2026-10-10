@@ -1,6 +1,7 @@
 # 裸机部署的坑
 
 部署形态：systemd（`immich.target` → postgres / redis / ml / server），PostgreSQL 在 rootless podman 里，Node 用 nvm，ML 用独立 venv，server 同时 serve web 静态文件（`IMMICH_BUILD_DATA/www`）。
+server 和 ML 都用 `IMMICH_HOST=127.0.0.1` 只监听本机：server 前面是反向代理，ML 只有 server 访问。ML 只监听 IPv4 回环，所以 server 的 `IMMICH_MACHINE_LEARNING_URL` 写 `127.0.0.1` 而不是 `localhost`。
 上游的一切默认都假设 Docker 镜像，裸机上要自己补齐镜像里"自带"的东西。
 
 ## 数据库备份
@@ -52,6 +53,7 @@ Immich 只从本机连数据库，所以应当加 `-c listen_addresses=localhost
   - binaryen version_124 放在 `/home/radxa/immich-cix/tools/`，构建时放进 PATH
 - **`IMMICH_BUILD_DATA` 布局**：`www/`、`geodata/`、`plugins/immich-plugin-core/{manifest.json,dist/plugin.wasm}`（v2 是 `corePlugin/`）；v3.3 还要 `geodata/countryInfo.txt`（GeoNames：`https://download.geonames.org/export/dump/countryInfo.txt`；每次反向地理编码都会读它，缺了整个功能报错）
 - 我自己在切换前犯的错：unit 里写的 `IMMICH_BUILD_DATA` 路径和实际目录不同，是切换前的预检发现的 → **切换前把 unit 里每个路径都 `ls` 一遍**
+- `IMMICH_BUILD_DATA` 里没有 `build-lock.json`（Docker 镜像才有）：打开管理页的版本信息时 server 会 `WARN Failed to read …/build-lock.json`，然后退回执行 `ffmpeg -version` 等命令取版本，无害
 
 ## 迁移与升级后任务
 
@@ -60,6 +62,9 @@ Immich 只从本机连数据库，所以应当加 `-c listen_addresses=localhost
 - 系统配置只存"与默认值不同"的字段：v3.2 起 `accelDecode` 默认 true，所以升级后它从存储里消失是正常的
 - 换 CLIP 模型：服务器会清空 embedding（维度不同时还会改列类型），但**不会自动重建索引**，要手动跑 Smart Search → All
 - 新的夜间完整性检查默认会对全库做 checksum，在 HDD 上负载很重，可以在设置里调
+- v3.2.4 → v3.3.1：4 个迁移 2 秒跑完；没有必做的升级后任务。上游改进了缩略图的缩放算法，但只影响新生成的缩略图，想让老照片也受益要手动跑一次全部缩略图（可选）
+- `regenerate-thumbnail` 会原地覆盖同一路径的文件，`asset_file.updatedAt` **不变**：判断有没有跑完要看文件的 mtime
+- ML 日志里每隔一段时间会出现 `Shutting down due to inactivity` + `Worker … was sent SIGINT!`：这是上游的空闲回收（模型卸载后重启 worker 释放内存），不是崩溃
 
 ## 手机 App
 
