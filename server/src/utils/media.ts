@@ -67,6 +67,14 @@ export const getCodecString = (codec: VideoCodec, width: number, height: number,
   }
 };
 
+// Vendor ffmpeg builds (e.g. the CIX P1 build needed for V4L2M2M) don't have jellyfin-ffmpeg's tonemapx filter,
+// in which case tone-mapping falls back to the zscale and tonemap filters
+let tonemapxAvailable = true;
+
+export const setTonemapxAvailable = (available: boolean) => {
+  tonemapxAvailable = available;
+};
+
 export class BaseConfig implements VideoCodecSWConfig {
   readonly presets = ['veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'superfast', 'ultrafast'];
   protected constructor(
@@ -132,6 +140,12 @@ export class BaseConfig implements VideoCodecSWConfig {
         handler = config.accelDecode
           ? new RkmppHwDecodeConfig(config, interfaces, tune)
           : new RkmppSwDecodeConfig(config, interfaces, tune);
+        break;
+      }
+      case TranscodeHardwareAcceleration.V4l2m2m: {
+        handler = config.accelDecode
+          ? new V4l2m2mHwDecodeConfig(config, interfaces, tune)
+          : new V4l2m2mSwDecodeConfig(config, interfaces, tune);
         break;
       }
       default: {
@@ -403,9 +417,25 @@ export class BaseConfig implements VideoCodecSWConfig {
       return [];
     }
 
+    if (!tonemapxAvailable) {
+      return this.getZscaleToneMapping('pc');
+    }
+
     const { primaries, transfer, matrix } = this.getColors();
     const options = `tonemapx=tonemap=${this.config.tonemap}:desat=0:p=${primaries}:t=${transfer}:m=${matrix}:r=pc:peak=100:format=yuv420p`;
     return [options];
+  }
+
+  getZscaleToneMapping(range: 'pc' | 'tv') {
+    const { primaries, transfer, matrix } = this.getColors();
+    return [
+      'zscale=t=linear:npl=100',
+      'format=gbrpf32le',
+      `zscale=p=${primaries}`,
+      `tonemap=tonemap=${this.config.tonemap}:desat=0`,
+      `zscale=t=${transfer}:m=${matrix}:r=${range}`,
+      'format=yuv420p',
+    ];
   }
 
   getAudioEncoder(): string {
@@ -1139,5 +1169,95 @@ export class RkmppHwDecodeConfig extends RkmppSwDecodeConfig {
       return [`scale_rkrga=${this.getScaling(videoStream)}:format=nv12:afbc=1:async_depth=4`];
     }
     return [];
+  }
+}
+
+const V4L2M2M_DECODERS: Record<string, string> = {
+  h264: 'h264_v4l2m2m',
+  hevc: 'hevc_v4l2m2m',
+  vp8: 'vp8_v4l2m2m',
+  vp9: 'vp9_v4l2m2m',
+  av1: 'av1_v4l2m2m',
+  mpeg2video: 'mpeg2_v4l2m2m',
+  mpeg4: 'mpeg4_v4l2m2m',
+};
+
+export class V4l2m2mSwDecodeConfig extends BaseHWConfig {
+  getDevice() {
+    // ffmpeg finds the right /dev/video* device by itself, so no /dev/dri device is needed
+    return '';
+  }
+
+  eligibleForTwoPass(): boolean {
+    return false;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  getBaseInputOptions(videoStream: VideoStreamInfo, format?: VideoFormat): string[] {
+    return [];
+  }
+
+  getPresetOptions() {
+    // the encoders only accept named levels (e.g. '5.1') and pick a suitable one by default
+    return [];
+  }
+
+  getBitrateOptions() {
+    const bitrate = this.getMaxBitrateValue();
+    if (bitrate > 0) {
+      return ['-b:v', `${bitrate}${this.getBitrateUnit()}`];
+    }
+    // use CRF value as QP value; the encoders ignore -qp unless rate control is disabled
+    return ['-rc_enable', '0', '-qp', String(this.config.crf)];
+  }
+
+  getVideoCodec(): string {
+    return `${this.config.targetVideoCodec}_v4l2m2m`;
+  }
+
+  getToneMapping(videoStream: VideoStreamInfo) {
+    if (!this.shouldToneMap(videoStream)) {
+      return [];
+    }
+    // the encoders don't signal full range, so keep the output in limited range
+    return this.getZscaleToneMapping('tv');
+  }
+
+  getFilterOptions(videoStream: VideoStreamInfo) {
+    const options = [];
+    if (this.shouldScale(videoStream)) {
+      options.push(`scale=${this.getScaling(videoStream)}`);
+    }
+    options.push(...this.getToneMapping(videoStream));
+    // the encoders only accept yuv420p input
+    if (options.at(-1) !== 'format=yuv420p') {
+      options.push('format=yuv420p');
+    }
+    return options;
+  }
+}
+
+export class V4l2m2mHwDecodeConfig extends V4l2m2mSwDecodeConfig {
+  getBaseInputOptions(videoStream: VideoStreamInfo): string[] {
+    const decoder = this.getDecoder(videoStream);
+    return decoder ? ['-c:v', decoder, '-noautorotate'] : [];
+  }
+
+  getScaling(videoStream: VideoStreamInfo) {
+    if (!this.getDecoder(videoStream)) {
+      return super.getScaling(videoStream);
+    }
+    // The CIX ffmpeg build forwards the scale filter's size to the decoder's downscaler, which only accepts
+    // explicit sizes. Frames aren't rotated because of -noautorotate, so size them in their stored orientation.
+    const { width, height } = getOutputSize({ ...videoStream, rotation: 0 }, this.getTargetResolution(videoStream));
+    return `${width}:${height}`;
+  }
+
+  private getDecoder(videoStream: VideoStreamInfo): string | undefined {
+    // the AV1 decoder gets stuck on 10-bit input
+    if (videoStream.codecName === 'av1' && videoStream.pixelFormat !== 'yuv420p') {
+      return;
+    }
+    return videoStream.codecName ? V4L2M2M_DECODERS[videoStream.codecName] : undefined;
   }
 }

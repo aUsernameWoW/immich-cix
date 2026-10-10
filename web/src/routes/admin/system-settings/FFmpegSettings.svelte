@@ -310,6 +310,10 @@
                   text: $t('admin.transcoding_acceleration_rkmpp'),
                 },
                 {
+                  value: TranscodeHWAccel.V4L2M2M,
+                  text: $t('admin.transcoding_acceleration_v4l2m2m'),
+                },
+                {
                   value: TranscodeHWAccel.Disabled,
                   text: $t('disabled'),
                 },

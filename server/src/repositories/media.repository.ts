@@ -3,9 +3,10 @@ import { ExifDateTime, WriteTags, exiftool } from 'exiftool-vendored';
 import ffmpeg, { FfprobeData, FfprobeStream } from 'fluent-ffmpeg';
 import { camelCase, upperFirst } from 'lodash-es';
 import { Duration } from 'luxon';
-import { spawn } from 'node:child_process';
+import { execFile as execFileCallback, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { Writable } from 'node:stream';
+import { promisify } from 'node:util';
 import sharp, { Sharp } from 'sharp';
 import type {
   Bitmap,
@@ -39,6 +40,8 @@ import {
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { handlePromiseError } from 'src/utils/misc.js';
 import { createAffineMatrix } from 'src/utils/transform.js';
+
+const execFile = promisify(execFileCallback);
 
 const probe = (input: string, options: string[]): Promise<FfprobeData> =>
   new Promise((resolve, reject) =>
@@ -430,6 +433,17 @@ export class MediaRepository {
         })
         .run();
     });
+  }
+
+  async hasFilter(name: string): Promise<boolean> {
+    try {
+      const { stdout } = await execFile('ffmpeg', ['-hide_banner', '-filters']);
+      // each line looks like ' TSC tonemapx          V->V       HDR to SDR tonemapping'
+      return stdout.split('\n').some((line) => line.trim().split(/\s+/, 2)[1] === name);
+    } catch (error) {
+      this.logger.warn(`Unable to list ffmpeg filters: ${error}`);
+      return false;
+    }
   }
 
   async getImageMetadata(input: string | Buffer): Promise<ImageDimensions & { isTransparent: boolean }> {

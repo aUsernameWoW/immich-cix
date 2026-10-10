@@ -222,6 +222,7 @@ export const SUPPORTED_HWA_CODECS: Record<TranscodeHardwareAcceleration, VideoCo
   [TranscodeHardwareAcceleration.Qsv]: [VideoCodec.H264, VideoCodec.Hevc, VideoCodec.Vp9, VideoCodec.Av1],
   [TranscodeHardwareAcceleration.Vaapi]: [VideoCodec.H264, VideoCodec.Hevc, VideoCodec.Vp9, VideoCodec.Av1],
   [TranscodeHardwareAcceleration.Rkmpp]: [VideoCodec.H264, VideoCodec.Hevc],
+  [TranscodeHardwareAcceleration.V4l2m2m]: [VideoCodec.H264, VideoCodec.Hevc],
   [TranscodeHardwareAcceleration.Disabled]: [VideoCodec.H264, VideoCodec.Hevc, VideoCodec.Vp9, VideoCodec.Av1],
 };
 
