@@ -56,6 +56,9 @@ _OPENCLIP_MODELS = {
     "ViT-SO400M-16-SigLIP2-512__webli",
     "ViT-gopt-16-SigLIP2-256__webli",
     "ViT-gopt-16-SigLIP2-384__webli",
+    # Chinese-CLIP (OFA-Sys) for the CIX NPU, deployed manually as .cix models
+    "chinese-clip-vit-base-patch16",
+    "chinese-clip-vit-large-patch14",
 }
 
 
