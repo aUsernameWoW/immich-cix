@@ -54,6 +54,7 @@ sudo systemd-run --unit=immich-dryrun --description="Immich dry run (test DB, ov
   -E DB_HOSTNAME=localhost -E DB_PORT="$TEST_DB_PORT" -E DB_USERNAME=postgres -E DB_PASSWORD=postgres -E DB_DATABASE_NAME=immich \
   -E REDIS_HOSTNAME=localhost -E REDIS_DBINDEX=1 -E IMMICH_MACHINE_LEARNING_URL="http://127.0.0.1:$TEST_ML_PORT" \
   -E IMMICH_MEDIA_LOCATION="$MEDIA_LOCATION" -E IMMICH_BUILD_DATA="$BUILD_DATA" -E IMMICH_PORT="$TEST_PORT" \
+  -E IMMICH_HOST=127.0.0.1 \
   "$NODE_BIN/node" dist/main.js
 
 echo "server: http://localhost:$TEST_PORT   logs: sudo journalctl -u immich-dryrun -f   ML log: $WORK/ml/ml.log"

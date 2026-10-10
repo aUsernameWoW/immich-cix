@@ -70,13 +70,22 @@ Immich 生成的是 `-2:720`，于是旧代码的**硬解 + 缩放全部失败**
 修复：启动时检测（`MediaRepository.hasFilter('tonemapx')`），没有就退回：
 
 ```
-zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=<algo>:desat=0,zscale=t=bt709:m=bt709:r=<range>,format=yuv420p
+zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=<algo>:desat=0:peak=10,zscale=t=bt709:m=bt709:r=<range>,format=yuv420p
 ```
 
 - 缩略图 / 软件转码用 `r=pc`（与上游 `tonemapx ... r=pc` 一致）
 - V4L2M2M 用 `r=tv`：编码器不在码流里标注 full range
 - 速度（4K HLG → 720p）：硬解 + CPU zscale 约 15 fps；软解约 6–8 fps。瓶颈是 float 色调映射
 - HEVC 10-bit 硬解输出 P010（不会先截成 8 bit），适合色调映射
+
+### `peak` 必须写死（2026-10-10 发现）
+
+ffmpeg 的 `tonemap` 没给 `peak` 时逐帧推算：先用 content light level（MaxCLL），再用 mastering display 的最大亮度，都没有才按帧的 `color_trc` 取默认值（PQ 100、HLG 10，单位是 `npl` = 100 nit）。在这块板子上这会出两个问题：
+
+- **手机写的元数据可能是垃圾**：一批 Android 13 的 HLG 视频声称 mastering display 最大 0.5 nit（三原色坐标全是 1/50000、MaxCLL 0），峰值变成 0.005，**软解**出来的画面全是青/黄色块。生产里 16 个这样的视频缩略图是坏的
+- **V4L2M2M 解码器既不传元数据也不传 `color_trc`**：硬解的帧一律按 10 处理，而软解的 PQ 会拿到 100，明显更暗
+
+所以 zscale 回退一律用 `peak=10`：所有硬解转码的输出逐比特不变（HLG、PQ 都验证过），软解与硬解一致（PSNR 39–41 dB），元数据再也影响不到颜色。验证软解路径要在演练环境把 `accelDecode` 关掉（硬解时这个问题根本不出现）；查看一个视频的 HDR 元数据：`ffprobe -select_streams v:0 -read_intervals %+#1 -show_frames -of json <file>` 里的 `side_data_list`
 
 ## 5. OpenCL 色调映射不可用
 

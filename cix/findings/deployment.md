@@ -50,7 +50,7 @@ Immich 只从本机连数据库，所以应当加 `-c listen_addresses=localhost
 - **核心插件** `packages/plugin-core`：需要 `extism-js` 和 binaryen
   - 官方 extism-js 1.7.0 预编译二进制要 glibc 2.39（Debian 12 是 2.36），用不了；本机 1.1.0 构建出的 wasm 在 v3.2.4 上正常加载
   - binaryen version_124 放在 `/home/radxa/immich-cix/tools/`，构建时放进 PATH
-- **`IMMICH_BUILD_DATA` 布局**：`www/`、`geodata/`、`plugins/immich-plugin-core/{manifest.json,dist/plugin.wasm}`（v2 是 `corePlugin/`）；v3.3 还要 `geodata/countryInfo.txt`
+- **`IMMICH_BUILD_DATA` 布局**：`www/`、`geodata/`、`plugins/immich-plugin-core/{manifest.json,dist/plugin.wasm}`（v2 是 `corePlugin/`）；v3.3 还要 `geodata/countryInfo.txt`（GeoNames：`https://download.geonames.org/export/dump/countryInfo.txt`；每次反向地理编码都会读它，缺了整个功能报错）
 - 我自己在切换前犯的错：unit 里写的 `IMMICH_BUILD_DATA` 路径和实际目录不同，是切换前的预检发现的 → **切换前把 unit 里每个路径都 `ls` 一遍**
 
 ## 迁移与升级后任务

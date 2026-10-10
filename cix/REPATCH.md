@@ -124,7 +124,9 @@ MEDIA_LOCATION=<生产 IMMICH_MEDIA_LOCATION> DUMP=<pg_dump -Fc 文件> cix/tool
 检查：
 - [ ] `journalctl -u immich-dryrun`：迁移全部成功、mount checks 通过、插件加载、`tonemapx` 回退日志
 - [ ] API 冒烟：统计、人物、缩略图、智能搜索、系统配置（API key 的创建方法见 [deployment.md](findings/deployment.md#用-api-自动化)）
-- [ ] 对几段 HDR / 旋转视频跑 `refresh-metadata` → `regenerate-thumbnail` → `transcode-video`，用 ffprobe 检查输出（分辨率、`rotation`、bt709/tv）并抽帧看一眼
+- [ ] 对几段 HDR / 旋转视频跑 `refresh-metadata` → `regenerate-thumbnail` → `transcode-video`，用 ffprobe 检查输出（分辨率、`rotation`、bt709/tv）并抽帧看一眼。和生产文件比 PSNR 时先看生产文件的日期：只有当前版本转出来的才应该逐比特一致
+- [ ] **软解路径也要测**（演练配置里临时关 `accelDecode`）：HDR 带怪元数据、竖存再旋转 90° 的视频（2160x3840 rot=90）只在软解时暴露问题
+- [ ] 地图 / 反向地理编码：`IMMICH_BUILD_DATA/geodata` 里该有的文件都在（v3.3 起要 `countryInfo.txt`，缺了**所有**反向地理编码都会失败）
 - [ ] 结束后 `cix/tools/dry-run/stop.sh`（不要让它过夜：夜间任务会扫整个 HDD）
 
 ## 8. 切换
