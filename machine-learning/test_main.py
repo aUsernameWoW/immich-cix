@@ -61,6 +61,7 @@ from immich_ml.schemas import (
     VisualOptions,
 )
 from immich_ml.sessions.ann import AnnSession
+from immich_ml.sessions.cix import CixSession
 from immich_ml.sessions.ort import Device, GraphSpec, OrtSession, flush_denormals, fresh, prepared
 from immich_ml.sessions.policy import ShapePolicy, batches, runs
 from immich_ml.sessions.rknn import RknnSession, run_inference
@@ -148,6 +149,35 @@ class TestBase:
         encoder = OpenClipTextualEncoder("ViT-B-32__openai")
 
         assert encoder.model_format == ModelFormat.RKNN
+
+    def test_sets_default_model_format_to_cix_if_deployed(self, tmp_path: Path, mocker: MockerFixture) -> None:
+        mocker.patch("immich_ml.sessions.cix.is_available", True)
+        mocker.patch("immich_ml.sessions.rknn.is_available", True)
+        (tmp_path / "textual" / "cix").mkdir(parents=True)
+        (tmp_path / "textual" / "cix" / "model.cix").touch()
+
+        encoder = OpenClipTextualEncoder("ViT-B-32__openai", cache_dir=tmp_path)
+
+        assert encoder.model_format == ModelFormat.CIX
+
+    def test_keeps_models_without_a_cix_binary_off_the_npu(self, tmp_path: Path, mocker: MockerFixture) -> None:
+        mocker.patch.object(settings, "ann", False)
+        mocker.patch("immich_ml.sessions.cix.is_available", True)
+        mocker.patch("immich_ml.sessions.rknn.is_available", False)
+
+        encoder = OpenClipTextualEncoder("ViT-B-32__openai", cache_dir=tmp_path)
+
+        assert encoder.model_format == ModelFormat.ONNX
+
+    def test_opens_the_cix_binary_in_a_cix_session(self, mocker: MockerFixture) -> None:
+        cix_session = mocker.patch("immich_ml.sessions.cix.CixSession")
+        encoder = OpenClipTextualEncoder("ViT-B-32__openai", cache_dir="/cache", model_format=ModelFormat.CIX)
+
+        session = encoder._make_session()
+
+        assert encoder.model_path == Path("/cache/textual/cix/model.cix")
+        cix_session.assert_called_once_with(Path("/cache/textual/cix/model.cix"))
+        assert session == cix_session.return_value
 
     def test_casts_cache_dir_string_to_path(self) -> None:
         cache_dir = "/test_cache"
@@ -950,6 +980,80 @@ class TestAnnSession:
         ann_session.return_value.execute.assert_called_once_with(123, [input1, input2])
         assert np_spy.call_count == 2
         np_spy.assert_has_calls([mock.call(input1), mock.call(input2)])
+
+
+class TestCixSession:
+    @pytest.mark.parametrize(
+        ("path", "model_type"),
+        [
+            ("/cache/clip/ViT-B-32__openai/visual/cix/model.cix", "clip_visual"),
+            ("/cache/clip/chinese-clip-vit-large-patch14/textual/cix/model.cix", "clip_textual"),
+            ("/cache/facial-recognition/buffalo_l/v2/detection/cix/model.cix", "detection"),
+            ("/cache/facial-recognition/buffalo_l/recognition/cix/model.cix", "recognition"),
+        ],
+    )
+    def test_is_its_own_graph_for_every_shape(self, path: str, model_type: str, mocker: MockerFixture) -> None:
+        mocker.patch.object(CixSession, "_init_engine")
+
+        session = CixSession(Path(path))
+
+        assert session.model_type == model_type
+        assert session.batches == (1,)
+        assert session.for_shape(Shape(batch=1)) is session
+        assert not session.normalizes_input
+        assert session.get_metadata() == {}
+
+    def test_passes_token_ids_through_without_quantizing(self) -> None:
+        desc = SimpleNamespace(scale=1.0, zero_point=0)
+        tokens = np.array([[101, 2769, 102, 0]], dtype=np.int32)
+
+        tensor = CixSession._to_tensor(tokens, desc, np.dtype(np.int32))
+
+        np.testing.assert_array_equal(tensor, tokens)
+
+    def test_quantizes_float_input_for_integer_tensors(self) -> None:
+        desc = SimpleNamespace(scale=10.0, zero_point=2)
+        pixels = np.array([0.5, -1.0, 100.0], dtype=np.float32)
+
+        tensor = CixSession._to_tensor(pixels, desc, np.dtype(np.int8))
+
+        assert tensor.dtype == np.int8
+        np.testing.assert_array_equal(tensor, [3, -12, 127])
+
+    def test_keeps_float_input_for_float_tensors(self) -> None:
+        pixels = np.array([0.25, -1.5], dtype=np.float32)
+
+        tensor = CixSession._to_tensor(pixels, SimpleNamespace(scale=1.0, zero_point=0), np.dtype(np.float16))
+
+        assert tensor.dtype == np.float16
+        np.testing.assert_array_equal(tensor, [0.25, -1.5])
+
+    def test_serializes_inference(self, mocker: MockerFixture) -> None:
+        session = CixSession.__new__(CixSession)
+        session._lock = threading.Lock()
+        held: list[bool] = []
+
+        def run(feed: Any) -> list[Any]:
+            held.append(session._lock.locked())
+            return []
+
+        mocker.patch.object(session, "_run", side_effect=run)
+
+        session.run(None, {"text": np.zeros((1, 52), dtype=np.int32)})
+
+        assert held == [True]
+        assert not session._lock.locked()
+
+    def test_maps_tensor_data_types(self) -> None:
+        libnoe = pytest.importorskip("libnoe")
+        from immich_ml.sessions.cix import _numpy_dtype
+
+        t = libnoe.noe_data_type_t
+        assert _numpy_dtype(t.NOE_DATA_TYPE_S16) == np.int16
+        assert _numpy_dtype(t.NOE_DATA_TYPE_F16) == np.float16
+        assert _numpy_dtype(t.NOE_DATA_TYPE_U8) == np.uint8
+        with pytest.raises(ValueError):
+            _numpy_dtype(t.NOE_DATA_TYPE_BF16)
 
 
 class TestRknnSession:

@@ -11,6 +11,7 @@ from typing import Any, ClassVar, Self
 from huggingface_hub import snapshot_download
 
 import immich_ml.sessions.ann.loader
+import immich_ml.sessions.cix as cix
 import immich_ml.sessions.rknn as rknn
 from immich_ml.sessions.ort import OrtSession
 
@@ -24,6 +25,7 @@ _IGNORED_PATTERNS: dict[ModelFormat, list[str]] = {
     ModelFormat.ONNX: ["*.armnn", "*.rknn"],
     ModelFormat.ARMNN: ["*.rknn"],
     ModelFormat.RKNN: ["*.armnn"],
+    ModelFormat.CIX: ["*.armnn", "*.rknn"],
 }
 
 
@@ -137,6 +139,8 @@ class InferenceModel[O: Options](ABC):
                 return OrtSession(self.model_path, self.shape_policy, threads=self.threads)
             case ModelFormat.RKNN:
                 return rknn.RknnSession(self.model_path)
+            case ModelFormat.CIX:
+                return cix.CixSession(self.model_path)
 
     @property
     def model_dir(self) -> Path:
@@ -146,6 +150,8 @@ class InferenceModel[O: Options](ABC):
     def model_path(self) -> Path:
         if self.model_format == ModelFormat.RKNN:
             return rknn.model_path(self.model_dir, self.shape_policy.label)
+        if self.model_format == ModelFormat.CIX:
+            return cix.model_path(self.model_dir)
         return self.model_dir / f"model.{self.model_format}"
 
     @property
@@ -184,7 +190,10 @@ class InferenceModel[O: Options](ABC):
 
     @property
     def _model_format_default(self) -> ModelFormat:
-        if rknn.is_available:
+        # .cix models are deployed by hand, so the NPU only runs the models that have one
+        if cix.is_available and cix.model_path(self.model_dir).is_file():
+            return ModelFormat.CIX
+        elif rknn.is_available:
             return ModelFormat.RKNN
         elif immich_ml.sessions.ann.loader.is_available and settings.ann:
             return ModelFormat.ARMNN

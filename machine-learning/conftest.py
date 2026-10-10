@@ -22,6 +22,13 @@ def asset() -> Callable[[str], bytes]:
     return lambda path: (TEST_ASSETS / path).read_bytes()
 
 
+@pytest.fixture(autouse=True)
+def cix_unavailable() -> Iterator[None]:
+    # keep the default model format independent of whether the test machine has a CIX NPU
+    with mock.patch("immich_ml.sessions.cix.is_available", False):
+        yield
+
+
 @pytest.fixture
 def pil_image() -> Image.Image:
     return Image.new("RGB", (600, 800))
